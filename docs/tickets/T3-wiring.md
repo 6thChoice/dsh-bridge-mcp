@@ -29,6 +29,15 @@ No new core logic. Wiring, documentation, and cross-harness verification.
 5. No secrets in the repo: the docs never print a real cookie or the credential secret; only the
    scheme and file path.
 
+## Known host facts (verified on this machine, 2026-11-23)
+
+- Claude Code `2.1.261` is on PATH (`claude`). Its user-scope MCP servers live in
+  `~/.claude.json` under `mcpServers` (currently empty); `claude mcp add` writes there.
+- Antigravity is installed (`/Applications/Antigravity.app`). Its MCP config file is
+  `~/.gemini/config/mcp_config.json` — currently an **empty file**, so write a well-formed
+  `{"mcpServers": {...}}` object.
+- Do not assume a server-name convention beyond the one you document; pick `dsh-bridge` for both.
+
 ## Notes
 
 - Keep the docs honest about the two known fragilities: the cookie scheme is internal to DSH
