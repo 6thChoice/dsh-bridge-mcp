@@ -8,7 +8,7 @@ Exactly one family per `send`; families AND together, so `--cwd` + `--latest` is
 
 ```sh
 dsh-bridge sessions --limit 5                  # newest 5
-dsh-bridge sessions --cwd ~/code/proj          # everything for one working directory
+dsh-bridge sessions --cwd <path-to-project>    # everything for one working directory
 dsh-bridge sessions --title "因子失效" --json   # title search, machine-readable
 ```
 
@@ -52,7 +52,7 @@ A blocking `send` is bounded by the *caller's* tool timeout as well as `--timeou
 Bash tool tops out at 10 minutes, for example. For anything longer, detach:
 
 ```sh
-rpc=$(dsh-bridge send "run the full backtest and report IC" --cwd ~/code/proj --latest --detach)
+rpc=$(dsh-bridge send "run the full backtest and report IC" --cwd <path-to-project> --latest --detach)
 # … do other work …
 dsh-bridge result --rpc-id "$rpc" --wait --timeout 600
 ```
@@ -133,7 +133,7 @@ mistake a failed turn for a successful one. MCP defaults: `timeoutSeconds` 3600,
 
 ```sh
 dsh-bridge send "你们 polymarket 那套数据管线现在还能跑吗？只回结论" \
-  --cwd /Users/zhouxuancheng/CodeBase/deepseek-harness/polymarket --latest
+  --cwd <absolute-path-to-session-cwd> --latest
 ```
 
 The other session runs its own turn with its own context and tools; the text comes back on stdout
@@ -151,5 +151,5 @@ dsh-bridge result --rpc-id 90eb72e9-0843-44eb-b07e-2323a5041ca4 --json
 **3. Which session am I even talking to?**
 
 ```sh
-dsh-bridge sessions --cwd ~/Documents/Agent/deepseek-harness --limit 10
+dsh-bridge sessions --cwd <absolute-path-to-session-cwd> --limit 10
 ```

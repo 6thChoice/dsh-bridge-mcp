@@ -23,6 +23,6 @@ and the smallest correct fix, so it can be picked up cold.
 | P3-4 | `src/result.ts:257, 365, 395` | Reads the whole `sends.jsonl` three times per `result`; growth is unbounded (append-only is mandated). Cap or rotate eventually. |
 | P3-5 | `src/cli.ts:234-244` | The "turn ended with status=…" stderr note exists for `send` only; `result` gives exit 3 with no explanation. |
 | P3-6 | `src/result.ts:301` | `durationMs` for `pending` is wall time since the message, not a turn duration. |
-| P3-7 | `src/host.ts` (discovery error) | The `lsof` failure message says "Pass `--host`", which is CLI phrasing; over MCP the actionable advice is `DSH_BRIDGE_HOST`. |
+| P3-7 | `src/host.ts` (discovery error) | ~~The `lsof` failure message says "Pass `--host`", which is CLI phrasing; over MCP the actionable advice is `DSH_BRIDGE_HOST`.~~ Fixed in the R1 portability slice: discovery errors take a caller kind and hint `--host` (CLI) or `DSH_BRIDGE_HOST` (MCP). |
 | P3-8 | `src/client.ts` (follow) | No reconnect: one dropped socket costs the answer (recoverable via `result`). Add a single bounded re-follow if it proves common. |
 | P3-9 | `src/result.ts` (baseline) | The follow baseline cursor is recorded but never read, so nothing detects an event skipped between the snapshot and the first live frame. Cheap assertion: first live frame's `seq === cursor + 1`. |

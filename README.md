@@ -13,7 +13,8 @@ DSH checkout. Zero runtime dependencies (Node's built-in `fetch` + `WebSocket`).
 
 - Node **>= 22.19**
 - A running DSH Web host: the desktop app, or `dsh web --no-open`
-- macOS for automatic host discovery (`lsof`); elsewhere pass `--host`
+- Automatic host discovery on macOS (`lsof`), Linux (`ss`, then `lsof`), and Windows
+  (`Get-NetTCPConnection`); on any other platform pass `--host` / `$DSH_BRIDGE_HOST`
 
 Docs: [`docs/install.md`](docs/install.md) — wiring into Claude Code and Antigravity, GUI `PATH`
 traps, troubleshooting · [`docs/usage.md`](docs/usage.md) — all flags, JSON contract, worked
@@ -22,7 +23,7 @@ examples · [`docs/spec.md`](docs/spec.md) — the binding contract and the veri
 ## Quickstart
 
 ```sh
-cd ~/CodeBase/dsh-bridge
+cd <path-to-dsh-bridge-mcp>
 npm install
 npm run build
 npm link
@@ -48,9 +49,9 @@ turn's text.
 Exactly one selector family per `send`/`result` call; filters AND together.
 
 ```sh
-dsh-bridge send "hi" --session f192cdb2        # exact id or unique prefix (session- ignored)
+dsh-bridge send "hi" --session <id-prefix>     # exact id or unique prefix (session- ignored)
 dsh-bridge send "hi" --title "ticket t1"       # case-insensitive title substring
-dsh-bridge send "hi" --cwd ~/CodeBase/project  # exact realpath-normalized cwd
+dsh-bridge send "hi" --cwd <path-to-project>   # exact realpath-normalized cwd
 dsh-bridge send "hi" --latest                  # newest updatedAt
 ```
 
@@ -96,10 +97,12 @@ Other useful flags: `--from <name>` (prefix `[via <name>] `, default `cli` or
 
 ## Host discovery
 
-Order: `--host <url>` → `$DSH_BRIDGE_HOST` → auto-detect loopback listeners owned by you
-whose process command mentions DeepSeek Harness/dsh, confirmed with a cookie-authenticated
-`session/list`. `--dsh-home <dir>` (or `$DSH_HOME`) selects the credentials and send index;
-default `~/.dsh`.
+Order: `--host <url>` → `$DSH_BRIDGE_HOST` → the optional config file
+(`${XDG_CONFIG_HOME:-~/.config}/dsh-bridge/config.json`, keys `url`, `host`, `dshHome`) →
+auto-detect loopback listeners owned by you whose process command mentions DeepSeek
+Harness/dsh. Every auto-detected candidate must pass a cookie-authenticated `session/list`
+before it is used. `--dsh-home <dir>` → `$DSH_HOME` → config `dshHome` selects the
+credentials and send index; default `~/.dsh`.
 
 ## Development
 
@@ -109,4 +112,6 @@ npm test            # unit tests + staging integration (spawned dsh web + stub p
 ```
 
 Integration tests never prompt a real session: they spawn a disposable DSH with a temp
-`DSH_HOME` and a local stub model endpoint. See `docs/spec.md` for the binding contract.
+`DSH_HOME` and a local stub model endpoint. They resolve `dsh` from `DSH_BIN` → `dsh` on
+`PATH` → the macOS app bundle, and self-skip (with a reason) when none is runnable, so a
+clean CI runner stays green. See `docs/spec.md` for the binding contract.

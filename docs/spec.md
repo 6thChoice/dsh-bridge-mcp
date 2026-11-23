@@ -22,7 +22,8 @@ sending to subagent addresses, editing session state, publishing to npm.
 - **Language/runtime:** TypeScript (strict), Node ≥ 22.19, **zero runtime dependencies**
   (`fetch` and global `WebSocket` are Node built-ins). `tsc` builds `dist/`; `prepare` runs the
   build so `npm link` produces working bins.
-- **Repo:** `~/CodeBase/dsh-bridge`, independent git repository. Not inside the DSH source tree.
+- **Repo:** standalone git repository (the checkout directory is not assumed). Not inside the DSH
+  source tree.
 
 ## 3. Wire facts (verified against a live host, 0.2.1-rc.2 desktop, port 49904)
 
@@ -227,14 +228,35 @@ Truncate nothing; let the caller pipe. Also serves as the connectivity/auth self
 
 ## 9. Host discovery
 
-Order: `--host <url>` → `DSH_BRIDGE_HOST` → auto-detect.
+Order: `--host <url>` → `DSH_BRIDGE_HOST` → config file → auto-detect.
 
-Auto-detect: enumerate loopback listening sockets owned by the current user (macOS `lsof`),
-keep candidates whose owning process command line mentions `DeepSeek Harness` or `dsh`, then
-confirm a candidate by a cookie-authenticated `session/list`. First confirmed wins. On failure
-print a hint to pass `--host http://127.0.0.1:<port>`.
+The optional config file is `${XDG_CONFIG_HOME:-~/.config}/dsh-bridge/config.json`:
 
-`--dsh-home <path>` overrides `$DSH_HOME` (default `~/.dsh`) for credentials and the send index.
+```json
+{ "url": "http://127.0.0.1:49904/?token=…", "host": "http://127.0.0.1:49904", "dshHome": "~/.dsh" }
+```
+
+Only `url`, `host`, and `dshHome` are accepted. Invalid JSON, an unknown key, or a non-string
+value is a named error (the file and the problem), never a silent ignore. `url` wins over `host`;
+only its origin is used for addressing. A leading `~` in `dshHome` expands to the home directory.
+
+Auto-detect by platform:
+
+| Platform | Probe order |
+|---|---|
+| macOS | `lsof -nP -iTCP -sTCP:LISTEN -u <uid> -a` |
+| Linux | `ss -ltnp`, then `lsof` |
+| Windows (best effort; sending untested) | `powershell -NoProfile -Command Get-NetTCPConnection -State Listen` |
+
+Each probe enumerates loopback listening sockets, keeps candidates whose owning process command
+line mentions `DeepSeek Harness` or `dsh`, then confirms a candidate by a cookie-authenticated
+`session/list`. First confirmed wins. If no probe can run or none confirms, the error names the
+platform and every probe tried, and states the fix for the caller: `--host
+http://127.0.0.1:<port>` for the CLI, `DSH_BRIDGE_HOST=http://127.0.0.1:<port>` for the MCP
+server.
+
+`--dsh-home <path>` overrides `$DSH_HOME`, which overrides the config file's `dshHome` (default
+`~/.dsh`), for credentials and the send index.
 
 ## 10. MCP server (`dsh-bridge-mcp`)
 
