@@ -1,7 +1,7 @@
 {
-  "name": "dsh-bridge",
+  "name": "dsh-bridge-mcp",
   "version": "0.1.0",
-  "description": "Send one message to a specific DeepSeek Harness session and read its answer back.",
+  "description": "Process-external client for a running DeepSeek Harness Web host: send one message to a session and read its answer back over MCP or the CLI.",
   "type": "module",
   "bin": {
     "dsh-bridge": "dist/cli.js",
@@ -10,6 +10,29 @@
   "files": [
     "dist"
   ],
+  "license": "MIT",
+  "author": "6thChoice <6thChoice@users.noreply.github.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/6thChoice/dsh-bridge-mcp.git"
+  },
+  "homepage": "https://github.com/6thChoice/dsh-bridge-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/6thChoice/dsh-bridge-mcp/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "mcp",
+    "model-context-protocol",
+    "agent",
+    "session",
+    "cli"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22.19"
   },
