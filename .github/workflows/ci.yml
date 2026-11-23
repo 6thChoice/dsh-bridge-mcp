@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor declared in package.json engines, plus the current LTS line.
+        node: ['22.19.0', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # Staging integration tests self-skip when no `dsh` binary is present, so this
+      # stays green on a clean runner: no DSH install, no model call, no network.
+      - run: npm test
+      - name: Tarball contents
+        run: |
+          npm pack --dry-run --json > pack.json
+          node -e '
+            const files = require("./pack.json")[0].files.map(f => f.path);
+            const bad = files.filter(p => /^(src|tests|docs|\.github)\//.test(p) || p.endsWith(".map"));
+            if (bad.length > 0) { console.error("unexpected files in tarball:", bad); process.exit(1); }
+            console.log(`${files.length} files packed`);
+          '
+
+  examples:
+    name: examples are valid json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate JSON examples
+        run: |
+          status=0
+          for f in examples/*.json; do
+            [ -e "$f" ] || continue
+            node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$f" || status=1
+          done
+          exit $status

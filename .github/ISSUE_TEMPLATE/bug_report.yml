@@ -1,0 +1,62 @@
+name: Bug report
+description: Something in dsh-bridge or dsh-bridge-mcp did not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please run `dsh-bridge doctor` and paste its output below. It reports the host, the auth
+        path, and the failing check, without printing any credential or cookie value — but read it
+        once before pasting.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The command you ran and what you expected instead.
+      placeholder: |
+        $ dsh-bridge send "..." --cwd ~/code/proj --latest
+        expected ..., got ...
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: doctor output
+      render: console
+      placeholder: paste `dsh-bridge doctor` output
+    validations:
+      required: true
+  - type: input
+    id: dsh-version
+    attributes:
+      label: DSH version
+      description: From the desktop app's About screen, or `dsh --version`.
+      placeholder: 0.2.1-rc.2
+    validations:
+      required: true
+  - type: dropdown
+    id: auth-path
+    attributes:
+      label: Authentication path
+      description: What `doctor` reports.
+      options:
+        - url-token
+        - credentials
+        - not sure / doctor fails before reporting
+    validations:
+      required: true
+  - type: input
+    id: harness
+    attributes:
+      label: Calling harness
+      description: Claude Code, Antigravity, Codex, a shell script, ...
+      placeholder: Claude Code 2.x
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and Node version
+      placeholder: macOS 15.6, Node 24.19.0
+    validations:
+      required: true
