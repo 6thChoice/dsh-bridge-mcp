@@ -44,8 +44,9 @@ resolution, prompt/await, result rendering, plus the staging harness that proves
 
 - Staging instance: pick a runnable `dsh`. The packaged app runtime CLI works:
   `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh web --no-open --port 0`
-  (reports `dsh web: http://127.0.0.1:<port>/?token=...`). It runs 0.2.1-rc.2; the live desktop app
-  is 0.1.5-rc.2. The wire surface used here is identical on both — if something differs, report it.
+  (reports `dsh web: http://127.0.0.1:<port>/?token=...`). The packaged CLI and the live desktop
+  app are both **0.2.1-rc.2**; the 0.1.5-rc.2 tree on this machine is only the DSH source checkout,
+  not a serving build. If the wire disappears on a later version, report it instead of guessing.
 - The staging instance's own cookie secret is minted on first Connection activation into its
   temp `DSH_HOME`; wait for readiness before reading it.
 - Keep `send` from prompting a staging session that has no configured provider: pass
@@ -91,10 +92,12 @@ Implemented 2026-11-23 by the T1 session (branch `main`).
    The stub therefore speaks both formats (`/v1/messages` and `/chat/completions`), selected by
    path; tests exercise the Anthropic route. Reason: verified against the live staging process,
    not assumed.
-2. **RPC error envelope.** The live 0.1.5 desktop nests errors as
+2. **RPC error envelope.** The live 0.2.1-rc.2 desktop nests errors as
    `result.error.{code,message,details}`; spec §3.2 shows them directly on `result`. The client
    accepts both and always reports the real code/message (verified with
-   `session/agent-busy` from `session/page` on subagent sessions).
+   `session/agent-busy` from `session/page` on subagent sessions). **Review correction:** that
+   check ran on 0.2.1-rc.2 twice (desktop + the staged packaged CLI), not on two host versions;
+   the 0.1.5-rc.2 tree is the source checkout only, never the serving build.
 3. **Read-back reconstruction.** A follow opening snapshot is capped and reports `hasMore`
    (live example below: cursor 654, 361 records). `result` therefore pages backwards with
    `session/page` from the follow cursor until the target `user/message` and its `turn/start`
@@ -281,3 +284,106 @@ const { result, exitCode, timeoutHint } = await sendMessage({
 - Add `"dsh-bridge-mcp": "dist/mcp.js"` to `package.json` bins; `scripts/postbuild.mjs`
   already chmods `dist/mcp.js` if it exists.
 - Node floor helper: `isNodeVersionSupported()` / `nodeVersionMessage()` in `runtime.ts`.
+
+## Review fixes (P1)
+
+Independent review, 2026-11-23. Three P1 defects, fixed on `main`; each fix ships with the
+regression test that failed before it. P2/P3 findings are deliberately not addressed here — they
+live in [`../backlog.md`](../backlog.md).
+
+### P1-1 — `result` leaked the follow socket, so the process could hang forever
+
+- **Finding.** `resultMessage` opened `session/follow`, then paged history with
+  `loadTurnHistory`; nothing closed the socket when that call threw (`session/page` fails with
+  `session/agent-busy` for subagent sessions, `gateway/bad-request ... past cursor`, or a
+  transient HTTP error). The CLI printed the error and returned 1, but the live socket kept the
+  event loop alive, so the process parked indefinitely.
+- **Fix.** `src/result.ts:403-442` — the whole open→return body now sits in
+  `try { … } finally { stream.close(); }`. The pre-existing explicit closes stay (`close()` is
+  idempotent). The `--wait` result is `await`ed inside the `try` so the `finally` cannot close
+  the stream before `awaitTurn` consumes it.
+- **Test.** `tests/result.test.ts` — *"a pageSession failure after the follow opens still closes
+  the stream (P1-1)"*: a fake client whose `pageSession` throws
+  `RpcError('session/agent-busy')` while a follow stream is open; asserts the call rejects with
+  that error and that the stream was closed.
+
+### P1-2 — a still-running turn's partial text printed on stdout with exit 0
+
+- **Finding.** `resultMessage` put `reconstructed.text` into `SendResult.text` even when the turn
+  had no `turn/end` (`status: "pending"`, exit 0), and the CLI prints any non-empty `text`. Spec
+  §6 says plain stdout is the **final** assistant text; an unfinished turn has none, so a caller
+  reading exit codes could not tell unfinished work from a final answer. `result --wait` reached
+  the same state when the stream ended before `turn/end`.
+- **Fix.** `src/result.ts:284-309` (`finalFromReconstruction`) and `src/result.ts:333-356`
+  (`fromOutcome`, the `--wait` path) — `text` stays `""` while `status: "pending"`; what settled
+  so far moves to a new JSON-only field `partialText` on `SendResult` (`src/run.ts:47-51`).
+  Plain mode therefore prints nothing (`src/cli.ts:204` already prints `text` only); `--json`
+  still reports `status: "pending"` and now also carries `partialText`. `timeout` keeps its
+  settled text (spec §5). MCP `dsh_result` is unaffected: its text block already falls back to
+  the rpcId when `text` is empty, and `structuredContent` carries the same fields.
+- **Tests.**
+  - `tests/result.test.ts` — *"a running turn has no final text: pending keeps text empty
+    (P1-2)"*: a reconstructed turn with an `assistant/message` text block and no `turn/end`;
+    asserts exit 0, `status: "pending"`, `text === ""`, `partialText === "PARTIAL"`.
+  - `tests/staging.test.ts` — *"plain result on a running turn prints nothing; --json still
+    reports pending"*: a real staged turn whose first step settles text plus a bash tool call and
+    whose second model call is held back. While the turn is running, the real CLI in plain mode
+    must print nothing and exit 0; `--json` must report `status: "pending"` with `text: ""` and
+    `partialText: "PARTIAL-TEXT"`.
+
+### P1-3 — `toolCalls[].ok` was always `false` on 0.1.x-shaped `tool/result`
+
+- **Finding.** `collectToolCalls` linked a `tool/result` to its `tool/call` using only
+  `message.toolCallId`, `data.callId`, and `message.callId`. The 0.1.x message shape carries no
+  top-level id: the call id is in `message.source.callId` (`{kind:"tool"}`) and
+  `message.content[0].toolCallId`, so every call stayed `ok: false` on those logs.
+- **Fix.** `src/run.ts:182-197` — the link also tries `message.source.callId` and
+  `message.content[0].toolCallId` (spec §3.5).
+- **Test.** `tests/render.test.ts` — *"tool results link through the 0.1.x message shape
+  (source.callId, content[0].toolCallId)"*: three 0.1.x-shaped results (source-only,
+  content-only, source-only with `data.error`) assert `ok` is `true`, `true`, `false`.
+
+### Corrections to claims in the earlier Result section
+
+- **Host versions.** The live desktop app is **0.2.1-rc.2**, not 0.1.5-rc.2; the 0.1.5-rc.2 tree
+  is only the DSH source checkout. The desktop app and the staged packaged CLI were therefore
+  both 0.2.1-rc.2 — what deviation 2 above calls "verified against both hosts" was really
+  0.2.1-rc.2 twice.
+- **`toolCalls`.** Acceptance criterion 7's "populated correctly" (and the staging test of the
+  same name) held only for the 0.2.x `tool/result` message shape; on 0.1.x-shaped logs every
+  `toolCalls[].ok` read `false` until P1-3.
+
+### Fail-before / pass-after (real output, abbreviated)
+
+```console
+$ node --test --test-concurrency=1 dist-test/tests/render.test.js   # before P1-3
+✖ tool results link through the 0.1.x message shape (source.callId, content[0].toolCallId)
+  actual:   [ { name: 'bash', ok: false }, { name: 'read', ok: false }, { name: 'glob', ok: false } ]
+  expected: [ { name: 'bash', ok: true }, { name: 'read', ok: true }, { name: 'glob', ok: false } ]
+$ node --test --test-concurrency=1 dist-test/tests/render.test.js   # after
+✔ tool results link through the 0.1.x message shape (source.callId, content[0].toolCallId) (0.07425ms)
+ℹ tests 9  ℹ pass 9  ℹ fail 0
+
+$ node --test --test-concurrency=1 dist-test/tests/result.test.js   # before P1-1/P1-2
+✖ a pageSession failure after the follow opens still closes the stream (P1-1)
+  AssertionError: the follow socket must be closed when loadTurnHistory throws after the open
+  false !== true
+✖ a running turn has no final text: pending keeps text empty (P1-2)
+  AssertionError: 'PARTIAL' !== ''
+  actual: 'PARTIAL'  expected: ''
+$ node --test --test-concurrency=1 dist-test/tests/result.test.js   # after
+✔ a pageSession failure after the follow opens still closes the stream (P1-1) (1.127125ms)
+✔ a running turn has no final text: pending keeps text empty (P1-2) (0.821416ms)
+ℹ tests 2  ℹ pass 2  ℹ fail 0
+
+$ node --test --test-concurrency=1 dist-test/tests/staging.test.js  # before P1-2, last test
+✖ plain result on a running turn prints nothing; --json still reports pending
+  AssertionError: plain stdout must carry the final text only, and this turn has none
+  actual: 'PARTIAL-TEXT\n'  expected: ''
+$ node --test --test-concurrency=1 dist-test/tests/staging.test.js  # after
+✔ plain result on a running turn prints nothing; --json still reports pending (218.752333ms)
+ℹ tests 9  ℹ pass 9  ℹ fail 0
+```
+
+Final state: `npm run typecheck` clean; `npm test` 57 tests, 57 pass, 0 fail (was 53 before the
+four new regression tests).
