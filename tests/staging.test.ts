@@ -7,8 +7,10 @@ import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
+import { asRecord, sessionCursor } from '../src/client.js';
 import {
   logHasRpcId,
+  rowFor,
   runCli,
   startStaging,
   waitUntilRunning,
@@ -34,6 +36,37 @@ function json(run: { stdout: string }): Record<string, unknown> {
   const lines = run.stdout.trim().split('\n');
   assert.equal(lines.length, 1, `--json must print exactly one line, got: ${run.stdout}`);
   return JSON.parse(run.stdout) as Record<string, unknown>;
+}
+
+/** Wait until the session log holds an assistant/message text block equal to `needle`. */
+async function waitForAssistantText(
+  sessionId: string,
+  needle: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const row = await rowFor(staging.client, sessionId);
+    const cursor = sessionCursor(row);
+    if (cursor !== undefined) {
+      const page = await staging.client.pageSession(sessionId, cursor, 100);
+      const found = page.records.some((record) => {
+        if (record.type !== 'event') return false;
+        const message = asRecord(asRecord(asRecord(record.event)?.data)?.message);
+        const content = message?.content;
+        if (!Array.isArray(content)) return false;
+        return content.some((block) => {
+          const entry = asRecord(block);
+          return entry?.type === 'text' && entry.text === needle;
+        });
+      });
+      if (found) return;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`assistant text "${needle}" never appeared in session ${sessionId}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 test('blocking send returns exactly the assistant text and records the rpcId', { timeout: 60_000 }, async () => {
@@ -252,4 +285,45 @@ test('sessions --json lists staging rows; unknown rpcId is a local error', { tim
   );
   assert.equal(missing.code, 1);
   assert.match(missing.stderr, /not in the send index/);
+});
+
+test('plain result on a running turn prints nothing; --json still reports pending', { timeout: 90_000 }, async () => {
+  // Two steps: the first settles an assistant/message carrying text plus a
+  // tool call, then the second model call is held back so the turn stays
+  // running with partial text visible in the durable log.
+  staging.stub.setHandler((request): StubResponse => {
+    if (request.hasToolResult) return { text: 'RUNNING-DONE', delayMs: 8000 };
+    return {
+      text: 'PARTIAL-TEXT',
+      toolCall: {
+        name: 'bash',
+        args: { command: 'echo partial', description: 'Echo while the turn runs' },
+      },
+    };
+  });
+  const sessionId = await staging.createSession();
+  const detached = await runCli(
+    ['send', 'running-marker', ...args(sessionId), '--detach', '--timeout', '20'],
+    { home: staging.home },
+  );
+  assert.equal(detached.code, 0, detached.stderr);
+  const rpcId = detached.stdout.trim();
+  await waitForAssistantText(sessionId, 'PARTIAL-TEXT');
+
+  const plain = await runCli(
+    ['result', '--rpc-id', rpcId, '--dsh-home', staging.home, '--host', staging.url],
+    { home: staging.home },
+  );
+  assert.equal(plain.code, 0, plain.stderr);
+  assert.equal(plain.stdout, '', 'plain stdout must carry the final text only, and this turn has none');
+
+  const withJson = await runCli(
+    ['result', '--rpc-id', rpcId, '--json', '--dsh-home', staging.home, '--host', staging.url],
+    { home: staging.home },
+  );
+  assert.equal(withJson.code, 0, withJson.stderr);
+  const pending = json(withJson);
+  assert.equal(pending.status, 'pending');
+  assert.equal(pending.text, '');
+  assert.equal(pending.partialText, 'PARTIAL-TEXT');
 });

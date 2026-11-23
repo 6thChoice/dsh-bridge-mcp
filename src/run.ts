@@ -44,7 +44,10 @@ export interface SendResult {
   turn?: number;
   status: TurnStatus;
   reason: Record<string, unknown>;
+  /** Final assistant text of our turn; empty unless the turn ended (spec §6). */
   text: string;
+  /** Settled assistant text seen before a `pending` turn ended; JSON-only field. */
+  partialText?: string;
   toolCalls: ToolCallOutcome[];
   durationMs: number;
   usage: Usage;

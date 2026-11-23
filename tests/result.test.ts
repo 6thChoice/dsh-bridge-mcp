@@ -35,7 +35,8 @@ function tempHome(): string {
 /** A follow stream that records `close()` and never yields an event. */
 class FakeStream {
   readonly snapshot = { cursor: 100, records: [] as StreamRecord[] };
-  closes = 0;
+  /** Real `close()` is idempotent; this flag answers "was it closed at all?". */
+  closed = false;
 
   async *events(): AsyncGenerator<DurableEvent> {
     // A `--wait` path would block on this iterator; these tests do not wait.
@@ -46,7 +47,7 @@ class FakeStream {
   }
 
   close(): void {
-    this.closes += 1;
+    this.closed = true;
   }
 }
 
@@ -106,8 +107,33 @@ test('a pageSession failure after the follow opens still closes the stream (P1-1
     (error: unknown) => error instanceof RpcError && error.code === 'session/agent-busy',
   );
   assert.equal(
-    stream.closes,
-    1,
+    stream.closed,
+    true,
     'the follow socket must be closed when loadTurnHistory throws after the open',
   );
+});
+
+test('a running turn has no final text: pending keeps text empty (P1-2)', async () => {
+  const home = tempHome();
+  const rpcId = 'rpc-2';
+  const index = indexed(home, rpcId);
+  const events = [
+    event('turn/start', 90, { turn: 3 }),
+    event('user/message', 91, { source: { kind: 'user', rpcId }, content: [] }),
+    event('assistant/message', 92, {
+      turn: 3,
+      message: { content: [{ type: 'text', text: 'PARTIAL' }] },
+    }),
+  ];
+  const { client, stream } = fakeClient(async () => ({
+    records: events.map(recordOf),
+    hasMore: false,
+  }));
+
+  const outcome = await resultMessage({ client, index, rpcId, timeoutMs: 5_000 });
+  assert.equal(outcome.exitCode, 0);
+  assert.equal(outcome.result.status, 'pending');
+  assert.equal(outcome.result.text, '');
+  assert.equal(outcome.result.partialText, 'PARTIAL');
+  assert.equal(stream.closed, true);
 });

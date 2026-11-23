@@ -286,9 +286,8 @@ function finalFromReconstruction(
   base: { rpcId: string; sessionId: string; from: string; host: string },
   now: number,
 ): SendOutcome {
-  const status = reconstructed.ended
-    ? statusForReasonKind(reconstructed.reason?.kind)
-    : 'pending';
+  const ended = reconstructed.ended;
+  const status = ended ? statusForReasonKind(reconstructed.reason?.kind) : 'pending';
   const result: SendResult = {
     rpcId: base.rpcId,
     sessionId: base.sessionId,
@@ -296,7 +295,11 @@ function finalFromReconstruction(
     turn: reconstructed.turn,
     status,
     reason: reconstructed.reason ?? { kind: status },
-    text: reconstructed.text,
+    // Spec §6: plain stdout is the *final* text; a running turn has none, so
+    // the object plain mode prints carries an empty `text`. What settled so far
+    // stays available to `--json` consumers as `partialText` (P1-2).
+    text: ended ? reconstructed.text : '',
+    ...(ended || reconstructed.text === '' ? {} : { partialText: reconstructed.text }),
     toolCalls: reconstructed.toolCalls,
     durationMs: durationFor(reconstructed.userEvent.time, reconstructed.endTime, now - reconstructed.userEvent.time),
     usage: reconstructed.usage,
@@ -331,6 +334,9 @@ function fromOutcome(
   outcome: TurnOutcome,
   base: { rpcId: string; sessionId: string; from: string; host: string },
 ): SendOutcome {
+  // `result --wait` lands here as `pending` when the stream ends before
+  // turn/end: same rule as finalFromReconstruction, no final text yet (P1-2).
+  const pending = outcome.status === 'pending';
   const result: SendResult = {
     rpcId: base.rpcId,
     sessionId: base.sessionId,
@@ -338,7 +344,8 @@ function fromOutcome(
     ...(outcome.turn === undefined ? {} : { turn: outcome.turn }),
     status: outcome.status,
     reason: outcome.reason ?? { kind: outcome.status },
-    text: outcome.text,
+    text: pending ? '' : outcome.text,
+    ...(pending && outcome.text !== '' ? { partialText: outcome.text } : {}),
     toolCalls: outcome.toolCalls,
     durationMs: outcome.durationMs,
     usage: outcome.usage,
