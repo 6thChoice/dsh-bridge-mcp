@@ -394,35 +394,43 @@ export async function resultMessage(options: ResultOptions): Promise<SendOutcome
   };
   const entry = options.index.lookup(options.rpcId);
   const stream = await options.client.followSession(resolved.sessionId);
-  const history = await loadTurnHistory(
-    options.client,
-    resolved.sessionId,
-    stream.snapshot.cursor,
-    options.rpcId,
-  );
+  try {
+    const history = await loadTurnHistory(
+      options.client,
+      resolved.sessionId,
+      stream.snapshot.cursor,
+      options.rpcId,
+    );
 
-  if (options.wait !== true) {
-    stream.close();
-    if (history.reconstructed !== undefined) {
+    if (options.wait !== true) {
+      stream.close();
+      if (history.reconstructed !== undefined) {
+        return finalFromReconstruction(history.reconstructed, base, now());
+      }
+      if (entry !== undefined) return pendingResult(base, undefined);
+      throw new ResultNotFoundError(
+        `rpcId ${options.rpcId} was not found in the durable log of session ${resolved.sessionId} ` +
+          `on ${options.client.host}`,
+      );
+    }
+
+    if (history.reconstructed !== undefined && history.reconstructed.ended) {
+      stream.close();
       return finalFromReconstruction(history.reconstructed, base, now());
     }
-    if (entry !== undefined) return pendingResult(base, undefined);
-    throw new ResultNotFoundError(
-      `rpcId ${options.rpcId} was not found in the durable log of session ${resolved.sessionId} ` +
-        `on ${options.client.host}`,
-    );
-  }
-
-  if (history.reconstructed !== undefined && history.reconstructed.ended) {
+    if (history.reconstructed === undefined && entry === undefined) {
+      stream.close();
+      throw new ResultNotFoundError(
+        `rpcId ${options.rpcId} was not found in the durable log of session ${resolved.sessionId} ` +
+          `on ${options.client.host}`,
+      );
+    }
+    // Await the wait path so the `finally` closes only after it settles.
+    return await enforceTurnEnd(options, stream, history.events, base);
+  } finally {
+    // The follow socket must never outlive this call: `loadTurnHistory` can
+    // throw after the open (pageSession policy/HTTP failures), and an open
+    // socket keeps the event loop alive, parking the process forever (P1-1).
     stream.close();
-    return finalFromReconstruction(history.reconstructed, base, now());
   }
-  if (history.reconstructed === undefined && entry === undefined) {
-    stream.close();
-    throw new ResultNotFoundError(
-      `rpcId ${options.rpcId} was not found in the durable log of session ${resolved.sessionId} ` +
-        `on ${options.client.host}`,
-    );
-  }
-  return enforceTurnEnd(options, stream, history.events, base);
 }
