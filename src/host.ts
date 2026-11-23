@@ -5,16 +5,27 @@
  * `client-request` envelope per call and turns every failure mode into a
  * message that names the host, endpoint, and HTTP status.
  *
- * Host resolution order (release contract): `--host` → `DSH_BRIDGE_HOST` →
- * the optional config file → platform discovery. Discovery probes are
- * platform-specific; each candidate must pass an authenticated `session/list`
- * before it is accepted.
+ * Host and auth resolution order (release contract):
+ *
+ * 1. `--url` → `DSH_BRIDGE_URL` (the launch URL `dsh web` prints). Its token is
+ *    exchanged for DSH's browser cookie; this path wins over everything below.
+ * 2. `--host` → `DSH_BRIDGE_HOST` → the optional config file → platform
+ *    discovery, with the cookie minted from `$DSH_HOME/.credentials.yaml`.
+ *
+ * The config file's `url` participates at its own rung: with a `?token=` it is
+ * the URL-token path, without one it contributes its origin like `host` does.
+ * A configured URL token that fails is reported as a failure — it never falls
+ * back to credential minting, so a broken token stays visible.
+ *
+ * Discovery probes are platform-specific; each candidate must pass an
+ * authenticated `session/list` before it is accepted.
  */
 
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { ConfigError, CredentialsError, HostError, ProtocolError, RpcError } from './errors.js';
 import { loadBrowserSessionSecret, mintBrowserCookie } from './auth.js';
+import { exchangeUrlToken, hasUrlToken, parseLaunchUrl } from './urltoken.js';
 import { homedir, userInfo } from 'node:os';
 import { type LoadedConfig, loadConfig, resolveDshHome } from './config.js';
 
@@ -23,6 +34,12 @@ export const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
 /** Which front end is resolving the host; only error hints differ. */
 export type CallerKind = 'cli' | 'mcp';
+
+/** How the cookie was obtained (release contract: two paths, automatic). */
+export type AuthPath = 'url-token' | 'credentials';
+
+/** Which input supplied the URL token or the credential secret. */
+export type AuthSource = 'flag' | 'env' | 'config' | 'credentials';
 
 /** An addressed DSH Web origin. */
 export class HostEndpoint {
@@ -97,6 +114,8 @@ export class RpcTransport {
     readonly endpoint: HostEndpoint,
     readonly cookie: string,
     readonly timeoutMs: number = DEFAULT_RPC_TIMEOUT_MS,
+    /** Only failure hints differ between the two auth paths. */
+    readonly authPath: AuthPath = 'credentials',
   ) {}
 
   async call<T>(method: string, args: unknown): Promise<T> {
@@ -138,15 +157,23 @@ export class RpcTransport {
       const snippet = raw.length > 400 ? `${raw.slice(0, 400)}…` : raw;
       if (response.status === 401) {
         throw new CredentialsError(
-          `DSH host ${this.endpoint.origin} rejected the minted cookie (HTTP 401). ` +
-            'The browser-session secret has rotated since DSH started; restart DSH and retry.',
+          this.authPath === 'url-token'
+            ? `DSH host ${this.endpoint.origin} rejected the URL-token cookie (HTTP 401). ` +
+                'DSH issues the token per launch: copy the URL the running instance printed ' +
+                'and retry.'
+            : `DSH host ${this.endpoint.origin} rejected the minted cookie (HTTP 401). ` +
+                'The browser-session secret has rotated since DSH started; restart DSH and retry.',
         );
       }
       if (response.status === 403) {
         throw new CredentialsError(
-          `DSH host ${this.endpoint.origin} rejected authority "${this.endpoint.authority}" ` +
-            `(HTTP 403). The cookie was minted for a different host:port; use the exact ` +
-            'loopback authority DSH is listening on.',
+          this.authPath === 'url-token'
+            ? `DSH host ${this.endpoint.origin} rejected authority "${this.endpoint.authority}" ` +
+                `(HTTP 403). Use the exact URL the running DSH printed: the token and the ` +
+                'cookie belong to its host:port.'
+            : `DSH host ${this.endpoint.origin} rejected authority "${this.endpoint.authority}" ` +
+                `(HTTP 403). The cookie was minted for a different host:port; use the exact ` +
+                'loopback authority DSH is listening on.',
         );
       }
       if (response.status === 404) {
@@ -233,22 +260,37 @@ export function unwrapResponse<T>(
 
 /* ------------------------------------------------------------ host resolution */
 
-export type HostSource = 'flag' | 'env' | 'config-url' | 'config-host' | 'discovery';
+export type HostSource =
+  | 'flag'
+  | 'url'
+  | 'env'
+  | 'url-env'
+  | 'config-url'
+  | 'config-host'
+  | 'discovery';
 
 export interface ResolvedHost {
   endpoint: HostEndpoint;
   cookie: string;
   /** DSH home actually used (`--dsh-home` → `$DSH_HOME` → config → `~/.dsh`). */
   dshHome: string;
-  /** Where the host came from; `doctor` will report this. */
+  /** Where the host came from; `doctor` reports this. */
   source: HostSource;
   /** Config path consulted, whether or not the file existed. */
   configFile: string;
+  /** `url-token` (exchanged from the launch URL) or `credentials` (minted). */
+  authPath: AuthPath;
+  /** Which input supplied the URL token or the credential file. */
+  authSource: AuthSource;
+  /** A usable credentials record exists, so the other path would also work. */
+  credentialsAvailable: boolean;
 }
 
 export interface ResolveHostOptions {
   /** `--host`, already higher priority than `DSH_BRIDGE_HOST`. */
   host?: string;
+  /** `--url`: the launch URL `dsh web` printed, `?token=` included. Wins over `host`. */
+  url?: string;
   /** `--dsh-home`; when absent, `$DSH_HOME`, then the config file, then `~/.dsh`. */
   dshHome?: string;
   /** Front end asking; changes only the fix hint in discovery errors. */
@@ -262,6 +304,8 @@ export interface ResolveHostOptions {
   platform?: NodeJS.Platform;
   probes?: readonly DiscoveryProbe[];
   confirm?: (endpoint: HostEndpoint, cookie: string) => Promise<void>;
+  fetchImpl?: typeof fetch;
+  exchangeTimeoutMs?: number;
 }
 
 /** Human-readable platform name used in discovery failure messages. */
@@ -285,43 +329,67 @@ function fixHint(caller: CallerKind): string {
     : 'Pass --host http://127.0.0.1:<port>, or add "host" to the dsh-bridge config file.';
 }
 
-/** The config file's host source, if it supplies one. `url` wins over `host`. */
-function endpointFromConfig(
-  loaded: LoadedConfig,
-): { endpoint: HostEndpoint; source: HostSource } | undefined {
-  const config = loaded.config;
-  if (config === undefined) return undefined;
+/** Appended when the credentials path is the only one available. */
+const CREDENTIAL_FIX =
+  'No URL token is configured. For a `dsh web` host, pass the URL it printed ' +
+  '(--url or DSH_BRIDGE_URL); for the desktop app, start DSH once with its Web host so ' +
+  '`$DSH_HOME/.credentials.yaml` gains the browser-session record.';
 
-  if (config.url !== undefined) {
-    let url: URL;
-    try {
-      url = new URL(config.url);
-    } catch (error) {
-      // Never echo the URL: it may embed a launch token.
-      throw new ConfigError(
-        `config file ${loaded.path}: "url" is not a valid absolute URL`,
-        { cause: error },
-      );
-    }
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      throw new ConfigError(
-        `config file ${loaded.path}: "url" must use http or https, got "${url.protocol}"`,
-      );
-    }
-    return { endpoint: new HostEndpoint(url.origin), source: 'config-url' };
-  }
+function nonEmpty(value: string | undefined): string | undefined {
+  return value === undefined || value === '' ? undefined : value;
+}
 
-  if (config.host !== undefined) {
-    try {
-      return { endpoint: new HostEndpoint(config.host), source: 'config-host' };
-    } catch (error) {
-      throw new ConfigError(
-        `config file ${loaded.path}: invalid "host": ${(error as Error).message}`,
-        { cause: error },
-      );
-    }
+/** Cheap probe: does a usable browser-session record exist? Never returns the secret. */
+function credentialsAvailable(dshHome: string): boolean {
+  try {
+    loadBrowserSessionSecret(dshHome);
+    return true;
+  } catch {
+    return false;
   }
-  return undefined;
+}
+
+/** Load the signing secret, naming the alternative auth path when it is missing. */
+function loadSecret(dshHome: string): Buffer {
+  try {
+    return loadBrowserSessionSecret(dshHome);
+  } catch (error) {
+    if (error instanceof CredentialsError) {
+      throw new CredentialsError(`${error.message}\n${CREDENTIAL_FIX}`, { cause: error });
+    }
+    throw error;
+  }
+}
+
+/** Parse the config file's `url`; never echo it (it may embed a launch token). */
+function parseConfigUrl(loaded: LoadedConfig): URL | undefined {
+  const raw = loaded.config?.url;
+  if (raw === undefined) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch (error) {
+    throw new ConfigError(`config file ${loaded.path}: "url" is not a valid absolute URL`, {
+      cause: error,
+    });
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new ConfigError(
+      `config file ${loaded.path}: "url" must use http or https, got "${url.protocol}"`,
+    );
+  }
+  return url;
+}
+
+function exchangeOptions(
+  options: ResolveHostOptions,
+  source: string,
+): { source: string; fetchImpl?: typeof fetch; timeoutMs?: number } {
+  return {
+    source,
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+    ...(options.exchangeTimeoutMs === undefined ? {} : { timeoutMs: options.exchangeTimeoutMs }),
+  };
 }
 
 async function defaultConfirm(endpoint: HostEndpoint, cookie: string): Promise<void> {
@@ -329,13 +397,37 @@ async function defaultConfirm(endpoint: HostEndpoint, cookie: string): Promise<v
   await transport.call<{ items?: unknown[] }>('session/list', { _request: {} });
 }
 
+/** Build a resolved host for the credential-minting path. */
+function credentialsHost(args: {
+  endpoint: HostEndpoint;
+  secret: Buffer;
+  dshHome: string;
+  source: HostSource;
+  configFile: string;
+}): ResolvedHost {
+  return {
+    endpoint: args.endpoint,
+    cookie: mintBrowserCookie({ secret: args.secret, authority: args.endpoint.authority }).header,
+    dshHome: args.dshHome,
+    source: args.source,
+    configFile: args.configFile,
+    authPath: 'credentials',
+    authSource: 'credentials',
+    credentialsAvailable: true,
+  };
+}
+
 /**
- * Resolve the host and mint its cookie.
+ * Resolve the host and its cookie.
  *
- * Order: `--host` → `DSH_BRIDGE_HOST` → config file (`url` then `host`) →
- * platform discovery confirmed by an authenticated `session/list`. The config
- * file is read (and validated) on every call, including when an explicit host
- * wins, so a broken config is never silently ignored.
+ * Order: `--url` → `DSH_BRIDGE_URL` (URL token, always wins) → `--host` →
+ * `DSH_BRIDGE_HOST` → config file (`url`, then `host`) → platform discovery.
+ * The config file is read (and validated) on every call, including when an
+ * explicit host wins, so a broken config is never silently ignored.
+ *
+ * A failed URL-token exchange is never retried through credential minting —
+ * not for `--url`, not for `DSH_BRIDGE_URL`, and not for the config file's
+ * `url`: a token that stopped working is a fact the caller must see.
  */
 export async function resolveHost(options: ResolveHostOptions = {}): Promise<ResolvedHost> {
   const env = options.env ?? process.env;
@@ -353,33 +445,110 @@ export async function resolveHost(options: ResolveHostOptions = {}): Promise<Res
     homeDir,
     ...(loaded.config === undefined ? {} : { config: loaded.config }),
   });
-  const secret = loadBrowserSessionSecret(dshHome);
 
-  const flagHost = options.host;
-  const envHost = env.DSH_BRIDGE_HOST;
-  const explicitHost = flagHost !== undefined && flagHost !== '' ? flagHost : envHost;
-  if (explicitHost !== undefined && explicitHost !== '') {
+  const flagHost = nonEmpty(options.host);
+  const envHost = nonEmpty(env.DSH_BRIDGE_HOST);
+  const explicitHost = flagHost ?? envHost;
+  const explicitHostLabel = flagHost !== undefined ? '--host' : 'DSH_BRIDGE_HOST';
+
+  const flagUrl = nonEmpty(options.url);
+  const envUrl = nonEmpty(env.DSH_BRIDGE_URL);
+  const explicitUrl = flagUrl ?? envUrl;
+  if (explicitUrl !== undefined) {
+    const urlSource = flagUrl !== undefined ? '--url' : 'DSH_BRIDGE_URL';
+    const launch = parseLaunchUrl(explicitUrl, urlSource);
+    if (explicitHost !== undefined) {
+      const declared = new HostEndpoint(explicitHost);
+      if (declared.origin !== launch.origin) {
+        throw new HostError(
+          `${urlSource} addresses ${launch.origin} but ${explicitHostLabel} addresses ` +
+            `${declared.origin}; they must name the same origin. The URL token is exchanged ` +
+            'with the origin in the URL, so use one input or make them agree.',
+        );
+      }
+    }
+    const exchanged = await exchangeUrlToken(launch, exchangeOptions(options, urlSource));
+    return {
+      endpoint: new HostEndpoint(exchanged.origin),
+      cookie: exchanged.cookie,
+      dshHome,
+      source: flagUrl !== undefined ? 'url' : 'url-env',
+      configFile: loaded.path,
+      authPath: 'url-token',
+      authSource: flagUrl !== undefined ? 'flag' : 'env',
+      credentialsAvailable: credentialsAvailable(dshHome),
+    };
+  }
+
+  if (explicitHost !== undefined) {
     const endpoint = new HostEndpoint(explicitHost);
-    return {
+    return credentialsHost({
       endpoint,
-      cookie: mintBrowserCookie({ secret, authority: endpoint.authority }).header,
+      secret: loadSecret(dshHome),
       dshHome,
-      source: flagHost !== undefined && flagHost !== '' ? 'flag' : 'env',
+      source: flagHost !== undefined ? 'flag' : 'env',
       configFile: loaded.path,
-    };
+    });
   }
 
-  const configured = endpointFromConfig(loaded);
-  if (configured !== undefined) {
-    return {
-      endpoint: configured.endpoint,
-      cookie: mintBrowserCookie({ secret, authority: configured.endpoint.authority }).header,
+  const configuredUrl = parseConfigUrl(loaded);
+  if (configuredUrl !== undefined) {
+    const rawUrl = loaded.config?.url ?? '';
+    if (hasUrlToken(rawUrl)) {
+      const launch = (() => {
+        try {
+          return parseLaunchUrl(rawUrl, '"url"');
+        } catch (error) {
+          throw new ConfigError(
+            `config file ${loaded.path}: ${(error as Error).message}`,
+            { cause: error },
+          );
+        }
+      })();
+      const exchanged = await exchangeUrlToken(
+        launch,
+        exchangeOptions(options, `the "url" in ${loaded.path}`),
+      );
+      return {
+        endpoint: new HostEndpoint(exchanged.origin),
+        cookie: exchanged.cookie,
+        dshHome,
+        source: 'config-url',
+        configFile: loaded.path,
+        authPath: 'url-token',
+        authSource: 'config',
+        credentialsAvailable: credentialsAvailable(dshHome),
+      };
+    }
+    return credentialsHost({
+      endpoint: new HostEndpoint(configuredUrl.origin),
+      secret: loadSecret(dshHome),
       dshHome,
-      source: configured.source,
+      source: 'config-url',
       configFile: loaded.path,
-    };
+    });
   }
 
+  if (loaded.config?.host !== undefined) {
+    let endpoint: HostEndpoint;
+    try {
+      endpoint = new HostEndpoint(loaded.config.host);
+    } catch (error) {
+      throw new ConfigError(
+        `config file ${loaded.path}: invalid "host": ${(error as Error).message}`,
+        { cause: error },
+      );
+    }
+    return credentialsHost({
+      endpoint,
+      secret: loadSecret(dshHome),
+      dshHome,
+      source: 'config-host',
+      configFile: loaded.path,
+    });
+  }
+
+  const secret = loadSecret(dshHome);
   const platform = options.platform ?? process.platform;
   const candidates = discoverLoopbackCandidates({
     platform,
@@ -393,7 +562,16 @@ export async function resolveHost(options: ResolveHostOptions = {}): Promise<Res
     const cookie = mintBrowserCookie({ secret, authority: endpoint.authority }).header;
     try {
       await confirm(endpoint, cookie);
-      return { endpoint, cookie, dshHome, source: 'discovery', configFile: loaded.path };
+      return {
+        endpoint,
+        cookie,
+        dshHome,
+        source: 'discovery',
+        configFile: loaded.path,
+        authPath: 'credentials',
+        authSource: 'credentials',
+        credentialsAvailable: true,
+      };
     } catch (error) {
       failures.push(`${endpoint.origin}: ${(error as Error).message.split('\n')[0] ?? ''}`);
       options.onDiscoveryNote?.(

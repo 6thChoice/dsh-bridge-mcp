@@ -7,7 +7,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { HostEndpoint, RpcTransport, resolveHost, type CallerKind, type HostSource } from './host.js';
+import { HostEndpoint, RpcTransport, resolveHost, type AuthPath, type CallerKind, type HostSource } from './host.js';
 import { ProtocolError } from './errors.js';
 import { resolveDshHome } from './config.js';
 
@@ -62,6 +62,8 @@ export interface PromptRequest {
 export interface SessionClientOptions {
   /** Explicit host URL; falls back to `DSH_BRIDGE_HOST`, the config file, then discovery. */
   host?: string;
+  /** Launch URL with `?token=`; exchanged for the cookie and wins over `host`. */
+  url?: string;
   /** DSH home used for `.credentials.yaml`; defaults to `$DSH_HOME`, config, then `~/.dsh`. */
   dshHome?: string;
   /** Front end asking (`cli` or `mcp`); only host-discovery error hints differ. */
@@ -104,31 +106,45 @@ export class SessionClient {
   readonly cookie: string;
   /** DSH home actually resolved for this client (config-aware). */
   readonly dshHome: string;
-  /** Where the host came from (`flag`, `env`, `config-*`, `discovery`). */
+  /** Where the host came from (`flag`, `url`, `env`, `config-*`, `discovery`). */
   readonly hostSource: HostSource | undefined;
+  /** How the cookie was obtained; `doctor` reports it. */
+  readonly authPath: AuthPath | undefined;
+  /** A usable credentials record also exists (the URL path still won). */
+  readonly credentialsAvailable: boolean | undefined;
   private readonly transport: RpcTransport;
 
   constructor(
     endpoint: HostEndpoint,
     cookie: string,
-    options: { rpcTimeoutMs?: number; dshHome?: string; hostSource?: HostSource } = {},
+    options: {
+      rpcTimeoutMs?: number;
+      dshHome?: string;
+      hostSource?: HostSource;
+      authPath?: AuthPath;
+      credentialsAvailable?: boolean;
+    } = {},
   ) {
     this.endpoint = endpoint;
     this.cookie = cookie;
     this.dshHome = options.dshHome ?? defaultDshHome();
     this.hostSource = options.hostSource;
-    this.transport = new RpcTransport(endpoint, cookie, options.rpcTimeoutMs);
+    this.authPath = options.authPath;
+    this.credentialsAvailable = options.credentialsAvailable;
+    this.transport = new RpcTransport(endpoint, cookie, options.rpcTimeoutMs, options.authPath);
   }
 
   /**
-   * Resolve host + credentials and return a client. Throws before any traffic
-   * when credentials are missing; auto-discovery confirms with `session/list`.
+   * Resolve host + cookie and return a client. Throws before any traffic when
+   * no auth path can produce a cookie; auto-discovery confirms with `session/list`.
    */
   static async connect(options: SessionClientOptions = {}): Promise<SessionClient> {
     const resolved = await resolveHost(options);
     return new SessionClient(resolved.endpoint, resolved.cookie, {
       dshHome: resolved.dshHome,
       hostSource: resolved.source,
+      authPath: resolved.authPath,
+      credentialsAvailable: resolved.credentialsAvailable,
       ...(options.rpcTimeoutMs === undefined ? {} : { rpcTimeoutMs: options.rpcTimeoutMs }),
     });
   }

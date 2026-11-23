@@ -329,11 +329,12 @@ test('host ladder is flag -> DSH_BRIDGE_HOST -> config, with sources reported', 
   }
 });
 
-test('config url wins over config host and contributes only its origin', async () => {
+test('config url wins over config host: with a token it is the URL-token path, without one it is an origin', async () => {
   const fixture = makeDshHome();
   const configDir = mkdtempSync(join(tmpdir(), 'dsh-bridge-host-config-'));
   try {
     const configPath = join(configDir, 'config.json');
+    // With `?token=`, the URL participates in the auth ladder (release contract).
     writeFileSync(
       configPath,
       JSON.stringify({
@@ -342,14 +343,38 @@ test('config url wins over config host and contributes only its origin', async (
       }),
       'utf8',
     );
-    const resolved = await resolveHost({
+    const fetchImpl: typeof fetch = () =>
+      Promise.resolve(
+        new Response(null, { status: 303, headers: { 'set-cookie': 'dsh-auth-x=v1.a.b; Path=/' } }),
+      );
+    const fromToken = await resolveHost({
+      dshHome: fixture.home,
+      configPath,
+      homeDir: fixture.home,
+      env: {},
+      fetchImpl,
+    });
+    assert.equal(fromToken.source, 'config-url');
+    assert.equal(fromToken.authPath, 'url-token');
+    assert.equal(fromToken.authSource, 'config');
+    assert.equal(fromToken.endpoint.origin, 'http://127.0.0.1:4444');
+    assert.equal(fromToken.cookie, 'dsh-auth-x=v1.a.b');
+
+    // Without a token the same rung only contributes its origin.
+    writeFileSync(
+      configPath,
+      JSON.stringify({ url: 'http://127.0.0.1:4444/', host: 'http://127.0.0.1:5555' }),
+      'utf8',
+    );
+    const fromOrigin = await resolveHost({
       dshHome: fixture.home,
       configPath,
       homeDir: fixture.home,
       env: {},
     });
-    assert.equal(resolved.source, 'config-url');
-    assert.equal(resolved.endpoint.origin, 'http://127.0.0.1:4444');
+    assert.equal(fromOrigin.source, 'config-url');
+    assert.equal(fromOrigin.authPath, 'credentials');
+    assert.equal(fromOrigin.endpoint.origin, 'http://127.0.0.1:4444');
   } finally {
     fixture.cleanup();
     rmSync(configDir, { recursive: true, force: true });
