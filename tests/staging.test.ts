@@ -12,6 +12,7 @@ import {
   logHasRpcId,
   rowFor,
   runCli,
+  stagingSkipReason,
   startStaging,
   waitUntilRunning,
   type Staging,
@@ -19,8 +20,10 @@ import {
 } from './staging.js';
 
 let staging: Staging;
+const stagingSkip = stagingSkipReason();
 
 before(async () => {
+  if (stagingSkip !== false) return;
   staging = await startStaging();
 }, { timeout: 120_000 });
 
@@ -69,7 +72,7 @@ async function waitForAssistantText(
   }
 }
 
-test('blocking send returns exactly the assistant text and records the rpcId', { timeout: 60_000 }, async () => {
+test('blocking send returns exactly the assistant text and records the rpcId', { skip: stagingSkip, timeout: 60_000 }, async () => {
   staging.stub.setHandler((request): StubResponse => {
     if (request.lastHumanText.includes('blocking-marker')) return { text: 'PONG-BLOCKING' };
     return { text: 'unexpected' };
@@ -107,7 +110,7 @@ test('blocking send returns exactly the assistant text and records the rpcId', {
   assert.ok(await logHasRpcId(staging.client, sessionId, result.rpcId as string));
 });
 
-test('--no-prefix sends the raw text', { timeout: 60_000 }, async () => {
+test('--no-prefix sends the raw text', { skip: stagingSkip, timeout: 60_000 }, async () => {
   staging.stub.setHandler((): StubResponse => ({ text: 'RAW' }));
   const sessionId = await staging.createSession();
   const run = await runCli(
@@ -122,7 +125,7 @@ test('--no-prefix sends the raw text', { timeout: 60_000 }, async () => {
   assert.equal(call?.lastHumanText, 'noprefix-marker');
 });
 
-test('--detach returns an rpcId, result is pending then completed', { timeout: 60_000 }, async () => {
+test('--detach returns an rpcId, result is pending then completed', { skip: stagingSkip, timeout: 60_000 }, async () => {
   staging.stub.setHandler((): StubResponse => ({ text: 'DETACHED', delayMs: 1500 }));
   const sessionId = await staging.createSession();
 
@@ -177,7 +180,7 @@ test('--detach returns an rpcId, result is pending then completed', { timeout: 6
   assert.equal(json(afterTheFact).status, 'completed');
 });
 
-test('timeout exits 2, names the rpcId, and hints how to read it later', { timeout: 60_000 }, async () => {
+test('timeout exits 2, names the rpcId, and hints how to read it later', { skip: stagingSkip, timeout: 60_000 }, async () => {
   staging.stub.setHandler((): StubResponse => ({ text: 'TOO-LATE', delayMs: 5000 }));
   const sessionId = await staging.createSession();
   const run = await runCli(
@@ -192,7 +195,7 @@ test('timeout exits 2, names the rpcId, and hints how to read it later', { timeo
   assert.match(run.stderr, new RegExp(`result --rpc-id ${String(result.rpcId)}`));
 });
 
-test('queued send returns its own turn, never the running turn', { timeout: 90_000 }, async () => {
+test('queued send returns its own turn, never the running turn', { skip: stagingSkip, timeout: 90_000 }, async () => {
   staging.stub.setHandler((request): StubResponse => {
     if (request.lastHumanText.includes('queue-first')) {
       return { text: 'FIRST-TURN', delayMs: 2500 };
@@ -221,7 +224,7 @@ test('queued send returns its own turn, never the running turn', { timeout: 90_0
   assert.ok(!String(result.text).includes('FIRST-TURN'));
 });
 
-test('toolCalls and usage are populated from a real bash tool turn', { timeout: 90_000 }, async () => {
+test('toolCalls and usage are populated from a real bash tool turn', { skip: stagingSkip, timeout: 90_000 }, async () => {
   staging.stub.setHandler((request): StubResponse => {
     if (request.hasToolResult) {
       return { text: 'TOOL-DONE', usage: { inputTokens: 20, outputTokens: 3 } };
@@ -248,7 +251,7 @@ test('toolCalls and usage are populated from a real bash tool turn', { timeout: 
   assert.deepEqual(result.usage, { inputTokens: 30, outputTokens: 5, cacheReadTokens: 0 });
 });
 
-test('result scans the newest sessions when the send index is gone', { timeout: 60_000 }, async () => {
+test('result scans the newest sessions when the send index is gone', { skip: stagingSkip, timeout: 60_000 }, async () => {
   staging.stub.setHandler((): StubResponse => ({ text: 'SCAN-ME' }));
   const sessionId = await staging.createSession();
   const sent = await runCli(
@@ -270,7 +273,7 @@ test('result scans the newest sessions when the send index is gone', { timeout: 
   assert.equal(result.from, 'unknown');
 });
 
-test('sessions --json lists staging rows; unknown rpcId is a local error', { timeout: 60_000 }, async () => {
+test('sessions --json lists staging rows; unknown rpcId is a local error', { skip: stagingSkip, timeout: 60_000 }, async () => {
   const sessions = await runCli(['sessions', '--json', '--host', staging.url, '--dsh-home', staging.home], {
     home: staging.home,
   });
@@ -287,7 +290,7 @@ test('sessions --json lists staging rows; unknown rpcId is a local error', { tim
   assert.match(missing.stderr, /not in the send index/);
 });
 
-test('plain result on a running turn prints nothing; --json still reports pending', { timeout: 90_000 }, async () => {
+test('plain result on a running turn prints nothing; --json still reports pending', { skip: stagingSkip, timeout: 90_000 }, async () => {
   // Two steps: the first settles an assistant/message carrying text plus a
   // tool call, then the second model call is held back so the turn stays
   // running with partial text visible in the durable log.

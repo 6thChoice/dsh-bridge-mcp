@@ -10,10 +10,16 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  accessSync,
+  constants,
+  mkdtempSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   SessionClient,
@@ -21,12 +27,105 @@ import {
   stripSessionPrefix,
   type SessionRow,
 } from '../src/client.js';
+import { resolveHost } from '../src/host.js';
 import { CredentialsError } from '../src/errors.js';
 import { loadBrowserSessionSecret } from '../src/auth.js';
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-export const DEFAULT_DSH_BIN =
+
+/** Standard install location of the packaged CLI, used only as a last resort. */
+export const MACOS_DSH_BIN =
   '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh';
+
+export interface DshBinaryResolution {
+  /** The runnable binary, when one was found. */
+  binary?: string;
+  source: 'DSH_BIN' | 'PATH' | 'macOS app' | 'none';
+  /** Why no binary was found; used verbatim in the self-skip message. */
+  reason?: string;
+}
+
+export interface ResolveDshBinaryOptions {
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  /** Test seam: pretend a path is (or is not) a runnable executable. */
+  isRunnable?: (path: string) => boolean;
+}
+
+function runnableOn(platform: NodeJS.Platform): (path: string) => boolean {
+  return (path: string): boolean => {
+    try {
+      if (!statSync(path).isFile()) return false;
+      if (platform !== 'win32') accessSync(path, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+}
+
+function findOnPath(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  isRunnable: (path: string) => boolean,
+): string | undefined {
+  const rawPath = env.PATH ?? env.Path ?? '';
+  const names = platform === 'win32' ? ['dsh.exe', 'dsh.cmd', 'dsh'] : ['dsh'];
+  for (const dir of rawPath.split(delimiter)) {
+    if (dir === '') continue;
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (isRunnable(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolve a runnable `dsh` for the staging suites:
+ * `DSH_BIN` → `dsh` on `PATH` → the macOS app-bundle path.
+ *
+ * A set-but-unrunnable `DSH_BIN` is authoritative (no further fallback): the
+ * operator pinned a binary, so quietly using another one would test the wrong
+ * thing. CI with no DSH therefore self-skips instead of failing.
+ */
+export function resolveDshBinary(options: ResolveDshBinaryOptions = {}): DshBinaryResolution {
+  const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const isRunnable = options.isRunnable ?? runnableOn(platform);
+
+  const fromEnv = env.DSH_BIN;
+  if (fromEnv !== undefined && fromEnv !== '') {
+    if (isRunnable(fromEnv)) return { binary: fromEnv, source: 'DSH_BIN' };
+    return {
+      source: 'none',
+      reason: `DSH_BIN=${fromEnv} is not a runnable dsh (set DSH_BIN to a dsh >= 0.2 CLI)`,
+    };
+  }
+
+  const onPath = findOnPath(env, platform, isRunnable);
+  if (onPath !== undefined) return { binary: onPath, source: 'PATH' };
+
+  if (platform === 'darwin' && isRunnable(MACOS_DSH_BIN)) {
+    return { binary: MACOS_DSH_BIN, source: 'macOS app' };
+  }
+
+  const checked = platform === 'darwin' ? `, or the macOS app bundle at ${MACOS_DSH_BIN}` : '';
+  return {
+    source: 'none',
+    reason:
+      'no runnable dsh found (set DSH_BIN to a dsh >= 0.2 CLI, or put dsh on PATH' +
+      `${checked})`,
+  };
+}
+
+/** `false` when staging can run; otherwise the node:test skip reason. */
+export function stagingSkipReason(options: ResolveDshBinaryOptions = {}): string | false {
+  const resolution = resolveDshBinary(options);
+  return resolution.binary === undefined
+    ? `staging tests skipped: ${resolution.reason ?? 'no runnable dsh found'}`
+    : false;
+}
 
 export interface StubRequest {
   path: string;
@@ -300,11 +399,11 @@ function sleep(ms: number): Promise<void> {
 
 /** Spawn a disposable DSH Web host plus stub provider. */
 export async function startStaging(): Promise<Staging> {
-  const dshBin = process.env.DSH_BIN ?? DEFAULT_DSH_BIN;
-  if (!existsSync(dshBin)) {
-    throw new Error(
-      `staging tests need the packaged dsh CLI at ${dshBin}; set DSH_BIN to another dsh 0.2.x binary`,
-    );
+  const resolution = resolveDshBinary();
+  const dshBin = resolution.binary;
+  if (dshBin === undefined) {
+    // Callers self-skip first; this is a guard for a direct `startStaging` call.
+    throw new Error(`staging tests need a runnable dsh CLI: ${resolution.reason ?? 'none found'}`);
   }
   const stub = new StubProvider();
   await stub.start();
@@ -371,7 +470,17 @@ export async function startStaging(): Promise<Staging> {
     throw new Error(`dsh web did not mint a browser-session secret; output:\n${output}`);
   }
 
-  const client = await SessionClient.connect({ host: origin, dshHome: home });
+  // Explicit host + a nonexistent config path: staging stays independent of the
+  // developer's real ~/.config/dsh-bridge/config.json.
+  const resolved = await resolveHost({
+    host: origin,
+    dshHome: home,
+    configPath: join(home, 'no-config.json'),
+  });
+  const client = new SessionClient(resolved.endpoint, resolved.cookie, {
+    dshHome: resolved.dshHome,
+    hostSource: resolved.source,
+  });
   const createSession = async (): Promise<string> => {
     const created = await client.rpc<unknown>('session/create', { request: {} });
     const record = asRecord(created);
@@ -429,7 +538,12 @@ export function runCli(
   args: string[],
   options: { home: string; env?: NodeJS.ProcessEnv } = { home: '' },
 ): Promise<CliRun> {
-  const env: NodeJS.ProcessEnv = { ...process.env, ...options.env };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    // Keep the developer's real config file out of staging runs.
+    XDG_CONFIG_HOME: join(tmpdir(), 'dsh-bridge-test-config-none'),
+    ...options.env,
+  };
   delete env.DSH_BRIDGE_HOST;
   if (options.home !== '') env.DSH_HOME = options.home;
   return new Promise<CliRun>((resolve, reject) => {

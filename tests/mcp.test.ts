@@ -14,6 +14,7 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { SessionClient, asRecord } from '../src/client.js';
@@ -24,7 +25,13 @@ import {
   handleRequest,
   toolNames,
 } from '../src/mcp.js';
-import { REPO_ROOT, startStaging, type Staging, type StubResponse } from './staging.js';
+import {
+  REPO_ROOT,
+  stagingSkipReason,
+  startStaging,
+  type Staging,
+  type StubResponse,
+} from './staging.js';
 
 /* ------------------------------------------------------------------ driver */
 
@@ -197,7 +204,12 @@ class McpClient {
 function childEnv(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of ['DSH_BRIDGE_FROM', 'DSH_BRIDGE_TIMEOUT']) delete env[key];
-  return { ...env, ...overrides };
+  // Keep the developer's real config file out of spawned-server tests.
+  return {
+    ...env,
+    XDG_CONFIG_HOME: join(tmpdir(), 'dsh-bridge-test-config-none'),
+    ...overrides,
+  };
 }
 
 function resultOf(message: unknown): Record<string, unknown> {
@@ -471,8 +483,10 @@ test('dsh_sessions lists rows from the live host (read-only)', { timeout: 120_00
 /* --------------------------------------------------------------- staging */
 
 let staging: Staging;
+const stagingSkip = stagingSkipReason();
 
 before(async () => {
+  if (stagingSkip !== false) return;
   staging = await startStaging();
 }, { timeout: 120_000 });
 
@@ -486,7 +500,7 @@ function stagingMcp(): McpClient {
   );
 }
 
-test('dsh_send completes against staging: text is the stub reply, status completed', { timeout: 120_000 }, async () => {
+test('dsh_send completes against staging: text is the stub reply, status completed', { skip: stagingSkip, timeout: 120_000 }, async () => {
   staging.stub.setHandler((request): StubResponse => {
     if (request.lastHumanText.includes('mcp-marker')) return { text: 'MCP-PONG' };
     return { text: 'unexpected' };
@@ -538,7 +552,7 @@ test('dsh_send completes against staging: text is the stub reply, status complet
   }
 });
 
-test('from defaults to $DSH_BRIDGE_FROM when the call omits it', { timeout: 120_000 }, async () => {
+test('from defaults to $DSH_BRIDGE_FROM when the call omits it', { skip: stagingSkip, timeout: 120_000 }, async () => {
   staging.stub.setHandler((request): StubResponse => {
     if (request.lastHumanText.includes('env-from-marker')) return { text: 'ENV-FROM-OK' };
     return { text: 'unexpected' };
@@ -568,7 +582,7 @@ test('from defaults to $DSH_BRIDGE_FROM when the call omits it', { timeout: 120_
   }
 });
 
-test('detach returns the rpcId as text; dsh_result --wait finishes the turn', { timeout: 120_000 }, async () => {
+test('detach returns the rpcId as text; dsh_result --wait finishes the turn', { skip: stagingSkip, timeout: 120_000 }, async () => {
   staging.stub.setHandler((): StubResponse => ({ text: 'MCP-DETACHED', delayMs: 1500 }));
   const sessionId = await staging.createSession();
   const mcp = stagingMcp();
@@ -606,7 +620,7 @@ test('detach returns the rpcId as text; dsh_result --wait finishes the turn', { 
   }
 });
 
-test('a timed-out send is isError with status timeout and stays readable', { timeout: 120_000 }, async () => {
+test('a timed-out send is isError with status timeout and stays readable', { skip: stagingSkip, timeout: 120_000 }, async () => {
   staging.stub.setHandler((): StubResponse => ({ text: 'LATE-BUT-DONE', delayMs: 3000 }));
   const sessionId = await staging.createSession();
   const mcp = stagingMcp();
@@ -642,7 +656,7 @@ test('a timed-out send is isError with status timeout and stays readable', { tim
   }
 });
 
-test('a bogus target is isError and the server keeps serving', { timeout: 120_000 }, async () => {
+test('a bogus target is isError and the server keeps serving', { skip: stagingSkip, timeout: 120_000 }, async () => {
   staging.stub.setHandler((): StubResponse => ({ text: 'UNREACHABLE' }));
   const mcp = stagingMcp();
   try {
