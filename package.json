@@ -4,7 +4,8 @@
   "description": "Send one message to a specific DeepSeek Harness session and read its answer back.",
   "type": "module",
   "bin": {
-    "dsh-bridge": "dist/cli.js"
+    "dsh-bridge": "dist/cli.js",
+    "dsh-bridge-mcp": "dist/mcp.js"
   },
   "files": [
     "dist"
