@@ -7,8 +7,9 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { HostEndpoint, RpcTransport, resolveHost } from './host.js';
+import { HostEndpoint, RpcTransport, resolveHost, type CallerKind, type HostSource } from './host.js';
 import { ProtocolError } from './errors.js';
+import { resolveDshHome } from './config.js';
 
 /** Default follow-opening budget. */
 export const DEFAULT_FOLLOW_TIMEOUT_MS = 15_000;
@@ -59,17 +60,22 @@ export interface PromptRequest {
 }
 
 export interface SessionClientOptions {
-  /** Explicit host URL; falls back to `DSH_BRIDGE_HOST`, then discovery. */
+  /** Explicit host URL; falls back to `DSH_BRIDGE_HOST`, the config file, then discovery. */
   host?: string;
-  /** DSH home used for `.credentials.yaml`; defaults to `$DSH_HOME` or `~/.dsh`. */
+  /** DSH home used for `.credentials.yaml`; defaults to `$DSH_HOME`, config, then `~/.dsh`. */
   dshHome?: string;
+  /** Front end asking (`cli` or `mcp`); only host-discovery error hints differ. */
+  caller?: CallerKind;
   rpcTimeoutMs?: number;
   onDiscoveryNote?: (message: string) => void;
 }
 
+/** Default DSH home without consulting the config file (kept for API compatibility). */
 export function defaultDshHome(): string {
   const fromEnv = process.env.DSH_HOME;
-  return fromEnv !== undefined && fromEnv !== '' ? fromEnv : join(homedir(), '.dsh');
+  return fromEnv !== undefined && fromEnv !== ''
+    ? resolveDshHome({ flag: fromEnv })
+    : join(homedir(), '.dsh');
 }
 
 /** Session title as projected by `session/list`; empty string when absent. */
@@ -96,12 +102,22 @@ export function sessionUpdatedAt(row: SessionRow): number {
 export class SessionClient {
   readonly endpoint: HostEndpoint;
   readonly cookie: string;
+  /** DSH home actually resolved for this client (config-aware). */
+  readonly dshHome: string;
+  /** Where the host came from (`flag`, `env`, `config-*`, `discovery`). */
+  readonly hostSource: HostSource | undefined;
   private readonly transport: RpcTransport;
 
-  constructor(endpoint: HostEndpoint, cookie: string, options?: { rpcTimeoutMs?: number }) {
+  constructor(
+    endpoint: HostEndpoint,
+    cookie: string,
+    options: { rpcTimeoutMs?: number; dshHome?: string; hostSource?: HostSource } = {},
+  ) {
     this.endpoint = endpoint;
     this.cookie = cookie;
-    this.transport = new RpcTransport(endpoint, cookie, options?.rpcTimeoutMs);
+    this.dshHome = options.dshHome ?? defaultDshHome();
+    this.hostSource = options.hostSource;
+    this.transport = new RpcTransport(endpoint, cookie, options.rpcTimeoutMs);
   }
 
   /**
@@ -109,15 +125,10 @@ export class SessionClient {
    * when credentials are missing; auto-discovery confirms with `session/list`.
    */
   static async connect(options: SessionClientOptions = {}): Promise<SessionClient> {
-    const dshHome = options.dshHome ?? defaultDshHome();
-    const resolved = await resolveHost({
-      host: options.host,
-      dshHome,
-      ...(options.onDiscoveryNote === undefined
-        ? {}
-        : { onDiscoveryNote: options.onDiscoveryNote }),
-    });
+    const resolved = await resolveHost(options);
     return new SessionClient(resolved.endpoint, resolved.cookie, {
+      dshHome: resolved.dshHome,
+      hostSource: resolved.source,
       ...(options.rpcTimeoutMs === undefined ? {} : { rpcTimeoutMs: options.rpcTimeoutMs }),
     });
   }

@@ -4,16 +4,25 @@
  * A host is identified by its origin. `RpcTransport` wraps exactly one
  * `client-request` envelope per call and turns every failure mode into a
  * message that names the host, endpoint, and HTTP status.
+ *
+ * Host resolution order (release contract): `--host` → `DSH_BRIDGE_HOST` →
+ * the optional config file → platform discovery. Discovery probes are
+ * platform-specific; each candidate must pass an authenticated `session/list`
+ * before it is accepted.
  */
 
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { CredentialsError, HostError, ProtocolError, RpcError } from './errors.js';
+import { ConfigError, CredentialsError, HostError, ProtocolError, RpcError } from './errors.js';
 import { loadBrowserSessionSecret, mintBrowserCookie } from './auth.js';
-import { userInfo } from 'node:os';
+import { homedir, userInfo } from 'node:os';
+import { type LoadedConfig, loadConfig, resolveDshHome } from './config.js';
 
 /** Default unary-call budget. `session/list` on a busy host is fast. */
 export const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+
+/** Which front end is resolving the host; only error hints differ. */
+export type CallerKind = 'cli' | 'mcp';
 
 /** An addressed DSH Web origin. */
 export class HostEndpoint {
@@ -222,46 +231,169 @@ export function unwrapResponse<T>(
   return result.value as T;
 }
 
+/* ------------------------------------------------------------ host resolution */
+
+export type HostSource = 'flag' | 'env' | 'config-url' | 'config-host' | 'discovery';
+
 export interface ResolvedHost {
   endpoint: HostEndpoint;
   cookie: string;
+  /** DSH home actually used (`--dsh-home` → `$DSH_HOME` → config → `~/.dsh`). */
+  dshHome: string;
+  /** Where the host came from; `doctor` will report this. */
+  source: HostSource;
+  /** Config path consulted, whether or not the file existed. */
+  configFile: string;
 }
 
 export interface ResolveHostOptions {
   /** `--host`, already higher priority than `DSH_BRIDGE_HOST`. */
   host?: string;
-  dshHome: string;
+  /** `--dsh-home`; when absent, `$DSH_HOME`, then the config file, then `~/.dsh`. */
+  dshHome?: string;
+  /** Front end asking; changes only the fix hint in discovery errors. */
+  caller?: CallerKind;
   /** Optional diagnostic sink; discovery stays silent on success. */
   onDiscoveryNote?: (message: string) => void;
+  /* Test seams. Production callers leave these unset. */
+  env?: NodeJS.ProcessEnv;
+  homeDir?: string;
+  configPath?: string;
+  platform?: NodeJS.Platform;
+  probes?: readonly DiscoveryProbe[];
+  confirm?: (endpoint: HostEndpoint, cookie: string) => Promise<void>;
+}
+
+/** Human-readable platform name used in discovery failure messages. */
+export function platformLabel(platform: NodeJS.Platform): string {
+  switch (platform) {
+    case 'darwin':
+      return 'macOS (darwin)';
+    case 'linux':
+      return 'Linux (linux)';
+    case 'win32':
+      return 'Windows (win32)';
+    default:
+      return `platform "${platform}"`;
+  }
+}
+
+function fixHint(caller: CallerKind): string {
+  return caller === 'mcp'
+    ? 'Set DSH_BRIDGE_HOST=http://127.0.0.1:<port> in the MCP server environment, or add ' +
+        '"host" to the dsh-bridge config file.'
+    : 'Pass --host http://127.0.0.1:<port>, or add "host" to the dsh-bridge config file.';
+}
+
+/** The config file's host source, if it supplies one. `url` wins over `host`. */
+function endpointFromConfig(
+  loaded: LoadedConfig,
+): { endpoint: HostEndpoint; source: HostSource } | undefined {
+  const config = loaded.config;
+  if (config === undefined) return undefined;
+
+  if (config.url !== undefined) {
+    let url: URL;
+    try {
+      url = new URL(config.url);
+    } catch (error) {
+      // Never echo the URL: it may embed a launch token.
+      throw new ConfigError(
+        `config file ${loaded.path}: "url" is not a valid absolute URL`,
+        { cause: error },
+      );
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new ConfigError(
+        `config file ${loaded.path}: "url" must use http or https, got "${url.protocol}"`,
+      );
+    }
+    return { endpoint: new HostEndpoint(url.origin), source: 'config-url' };
+  }
+
+  if (config.host !== undefined) {
+    try {
+      return { endpoint: new HostEndpoint(config.host), source: 'config-host' };
+    } catch (error) {
+      throw new ConfigError(
+        `config file ${loaded.path}: invalid "host": ${(error as Error).message}`,
+        { cause: error },
+      );
+    }
+  }
+  return undefined;
+}
+
+async function defaultConfirm(endpoint: HostEndpoint, cookie: string): Promise<void> {
+  const transport = new RpcTransport(endpoint, cookie);
+  await transport.call<{ items?: unknown[] }>('session/list', { _request: {} });
 }
 
 /**
- * Resolve the host in spec §9 order and mint its cookie:
- * `--host` → `DSH_BRIDGE_HOST` → loopback discovery confirmed by `session/list`.
+ * Resolve the host and mint its cookie.
+ *
+ * Order: `--host` → `DSH_BRIDGE_HOST` → config file (`url` then `host`) →
+ * platform discovery confirmed by an authenticated `session/list`. The config
+ * file is read (and validated) on every call, including when an explicit host
+ * wins, so a broken config is never silently ignored.
  */
-export async function resolveHost(options: ResolveHostOptions): Promise<ResolvedHost> {
-  const secret = loadBrowserSessionSecret(options.dshHome);
-  const explicit = options.host ?? process.env.DSH_BRIDGE_HOST;
-  if (explicit !== undefined && explicit !== '') {
-    const endpoint = new HostEndpoint(explicit);
-    return { endpoint, cookie: mintBrowserCookie({ secret, authority: endpoint.authority }).header };
+export async function resolveHost(options: ResolveHostOptions = {}): Promise<ResolvedHost> {
+  const env = options.env ?? process.env;
+  const homeDir = options.homeDir ?? homedir();
+  const caller = options.caller ?? 'cli';
+
+  const loaded = loadConfig({
+    env,
+    homeDir,
+    ...(options.configPath === undefined ? {} : { path: options.configPath }),
+  });
+  const dshHome = resolveDshHome({
+    ...(options.dshHome === undefined ? {} : { flag: options.dshHome }),
+    env,
+    homeDir,
+    ...(loaded.config === undefined ? {} : { config: loaded.config }),
+  });
+  const secret = loadBrowserSessionSecret(dshHome);
+
+  const flagHost = options.host;
+  const envHost = env.DSH_BRIDGE_HOST;
+  const explicitHost = flagHost !== undefined && flagHost !== '' ? flagHost : envHost;
+  if (explicitHost !== undefined && explicitHost !== '') {
+    const endpoint = new HostEndpoint(explicitHost);
+    return {
+      endpoint,
+      cookie: mintBrowserCookie({ secret, authority: endpoint.authority }).header,
+      dshHome,
+      source: flagHost !== undefined && flagHost !== '' ? 'flag' : 'env',
+      configFile: loaded.path,
+    };
   }
 
-  const candidates = discoverLoopbackCandidates();
-  if (candidates.length === 0) {
-    throw new HostError(
-      'no loopback DSH host found. Start DSH Web (or the desktop app) and pass ' +
-        '--host http://127.0.0.1:<port> if auto-detection cannot see it.',
-    );
+  const configured = endpointFromConfig(loaded);
+  if (configured !== undefined) {
+    return {
+      endpoint: configured.endpoint,
+      cookie: mintBrowserCookie({ secret, authority: configured.endpoint.authority }).header,
+      dshHome,
+      source: configured.source,
+      configFile: loaded.path,
+    };
   }
 
+  const platform = options.platform ?? process.platform;
+  const candidates = discoverLoopbackCandidates({
+    platform,
+    caller,
+    ...(options.probes === undefined ? {} : { probes: options.probes }),
+  });
+
+  const confirm = options.confirm ?? defaultConfirm;
   const failures: string[] = [];
   for (const endpoint of candidates) {
     const cookie = mintBrowserCookie({ secret, authority: endpoint.authority }).header;
     try {
-      const transport = new RpcTransport(endpoint, cookie);
-      await transport.call<{ items?: unknown[] }>('session/list', { _request: {} });
-      return { endpoint, cookie };
+      await confirm(endpoint, cookie);
+      return { endpoint, cookie, dshHome, source: 'discovery', configFile: loaded.path };
     } catch (error) {
       failures.push(`${endpoint.origin}: ${(error as Error).message.split('\n')[0] ?? ''}`);
       options.onDiscoveryNote?.(
@@ -271,48 +403,213 @@ export async function resolveHost(options: ResolveHostOptions): Promise<Resolved
   }
 
   throw new HostError(
-    `no reachable DSH host among loopback candidates.\n  ${failures.join('\n  ')}\n` +
-      'Pass --host http://127.0.0.1:<port> explicitly, and --dsh-home if that host uses a ' +
-      'different DSH home.',
+    `automatic host discovery on ${platformLabel(platform)} found ` +
+      `${String(candidates.length)} candidate(s), but none accepted an authenticated ` +
+      `session/list:\n  ${failures.join('\n  ')}\n${fixHint(caller)}`,
   );
 }
 
+/* --------------------------------------------------------------- discovery */
+
+interface ListeningSocket {
+  pid: number;
+  command: string;
+}
+
+export interface DiscoveryCommand {
+  file: string;
+  args: string[];
+}
+
+/** Runs one probe command and returns stdout; throws when it cannot run. */
+export type CommandRunner = (command: DiscoveryCommand) => string;
+
+export const defaultCommandRunner: CommandRunner = (command) =>
+  execFileSync(command.file, command.args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 15_000,
+    maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true,
+  });
+
+/** A platform-specific way to enumerate loopback listeners. */
+export interface DiscoveryProbe {
+  /** Short name shown in failure messages, e.g. `lsof` or `Get-NetTCPConnection`. */
+  readonly name: string;
+  /** The command this probe runs, shown in failure messages. */
+  readonly detail: string;
+  /** Candidates, best first. Throws when the underlying command cannot run. */
+  run(): HostEndpoint[];
+}
+
+export interface ProbeOptions {
+  runner?: CommandRunner;
+}
+
 /**
- * macOS: enumerate listening loopback TCP sockets owned by this user, keep
- * processes whose command line mentions DeepSeek Harness or dsh.
+ * macOS (and the Linux fallback): enumerate listening loopback TCP sockets
+ * owned by this user, keep processes whose command line mentions DeepSeek
+ * Harness or dsh.
  */
-export function discoverLoopbackCandidates(): HostEndpoint[] {
-  if (process.platform !== 'darwin') {
+export function lsofProbe(options: ProbeOptions = {}): DiscoveryProbe {
+  const runner = options.runner ?? defaultCommandRunner;
+  const uid = userInfo().uid;
+  const command: DiscoveryCommand = {
+    file: 'lsof',
+    args: ['-nP', '-iTCP', '-sTCP:LISTEN', '-u', String(uid), '-a'],
+  };
+  return {
+    name: 'lsof',
+    detail: `${command.file} ${command.args.join(' ')}`,
+    run(): HostEndpoint[] {
+      // lsof exits 1 when it cannot stat some matched process, but still prints
+      // the sockets it did resolve; keep that partial output.
+      let output: string;
+      try {
+        output = runner(command);
+      } catch (error) {
+        const stdout = (error as { stdout?: unknown }).stdout;
+        if (typeof stdout === 'string' && stdout.trim() !== '') {
+          output = stdout;
+        } else {
+          throw error;
+        }
+      }
+      const sockets = parseLsofListeners(output);
+      return endpointsFromSockets(sockets, readProcessCommands(uniquePids(sockets), runner));
+    },
+  };
+}
+
+/** Linux, first choice: `ss -ltnp`, with process command lines via `ps`. */
+export function ssProbe(options: ProbeOptions = {}): DiscoveryProbe {
+  const runner = options.runner ?? defaultCommandRunner;
+  const command: DiscoveryCommand = { file: 'ss', args: ['-ltnp'] };
+  return {
+    name: 'ss',
+    detail: 'ss -ltnp',
+    run(): HostEndpoint[] {
+      const sockets = parseSsListeners(runner(command));
+      return endpointsFromSockets(sockets, readProcessCommands(uniquePids(sockets), runner));
+    },
+  };
+}
+
+/*
+ * Windows: one PowerShell invocation, `-NoProfile` so no user profile can make
+ * it interactive or slow. Get-NetTCPConnection gives the listener and owning
+ * pid; Get-CimInstance supplies the command line used to recognize DSH.
+ */
+const WINDOWS_DISCOVERY_SCRIPT = `
+$ErrorActionPreference = 'SilentlyContinue'
+Get-NetTCPConnection -State Listen |
+  Where-Object { $_.LocalAddress -eq '127.0.0.1' -or $_.LocalAddress -eq '::1' } |
+  ForEach-Object {
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $($_.OwningProcess)"
+    [pscustomobject]@{
+      Address = $_.LocalAddress
+      Port = [int]$_.LocalPort
+      Pid = [int]$_.OwningProcess
+      Command = [string]$process.CommandLine
+    }
+  } | ConvertTo-Json -Compress
+`;
+
+/**
+ * Windows discovery (best effort; sending on Windows is untested per the
+ * release contract). Confirmation by `session/list` is the real gate.
+ */
+export function windowsProbe(options: ProbeOptions = {}): DiscoveryProbe {
+  const runner = options.runner ?? defaultCommandRunner;
+  const command: DiscoveryCommand = {
+    file: 'powershell',
+    args: ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_DISCOVERY_SCRIPT],
+  };
+  return {
+    name: 'Get-NetTCPConnection',
+    detail: 'powershell -NoProfile -Command Get-NetTCPConnection -State Listen',
+    run(): HostEndpoint[] {
+      return endpointsFromSockets(parseWindowsListeners(runner(command)), new Map());
+    },
+  };
+}
+
+/** The probes for a platform, in the order they should be tried. */
+export function platformProbes(
+  platform: NodeJS.Platform,
+  options: ProbeOptions = {},
+): DiscoveryProbe[] {
+  const probeOptions: ProbeOptions = options.runner === undefined ? {} : { runner: options.runner };
+  switch (platform) {
+    case 'darwin':
+      return [lsofProbe(probeOptions)];
+    case 'linux':
+      return [ssProbe(probeOptions), lsofProbe(probeOptions)];
+    case 'win32':
+      return [windowsProbe(probeOptions)];
+    default:
+      return [];
+  }
+}
+
+export interface DiscoverLoopbackOptions {
+  platform?: NodeJS.Platform;
+  /** Override the platform probes (unit tests inject fakes). */
+  probes?: readonly DiscoveryProbe[];
+  caller?: CallerKind;
+}
+
+/**
+ * Run the platform probes in order and return the first non-empty candidate
+ * list. Candidates are not yet trusted: `resolveHost` confirms each with an
+ * authenticated `session/list`.
+ *
+ * When every probe fails or finds nothing, the error names the platform, every
+ * probe tried, and the fix for this caller (CLI flag vs MCP environment).
+ */
+export function discoverLoopbackCandidates(
+  options: DiscoverLoopbackOptions = {},
+): HostEndpoint[] {
+  const platform = options.platform ?? process.platform;
+  const caller = options.caller ?? 'cli';
+  const probes = options.probes ?? platformProbes(platform);
+
+  if (probes.length === 0) {
     throw new HostError(
-      'automatic host discovery uses macOS lsof; pass --host http://127.0.0.1:<port> ' +
-        `on ${process.platform}`,
+      `automatic host discovery is not implemented on ${platformLabel(platform)}: no probe is ` +
+        `registered for it.\n${fixHint(caller)}`,
     );
   }
-  const uid = userInfo().uid;
-  let output: string;
-  try {
-    output = execFileSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-u', String(uid), '-a'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 15_000,
-    });
-  } catch (error) {
-    const stdout = (error as { stdout?: unknown }).stdout;
-    if (typeof stdout === 'string' && stdout.trim() !== '') {
-      output = stdout;
-    } else {
-      throw new HostError(
-        `cannot enumerate listening sockets with lsof: ${String(error)}. ` +
-          'Pass --host http://127.0.0.1:<port> explicitly.',
+
+  const attempts: string[] = [];
+  for (const probe of probes) {
+    try {
+      const endpoints = probe.run();
+      if (endpoints.length > 0) return endpoints;
+      attempts.push(`  ${probe.name} (${probe.detail}): ran, found no matching loopback listener`);
+    } catch (error) {
+      attempts.push(
+        `  ${probe.name} (${probe.detail}): cannot run: ` +
+          `${(error as Error).message.split('\n')[0] ?? ''}`,
       );
     }
   }
 
-  const sockets = parseLsofListeners(output);
-  if (sockets.size === 0) return [];
+  throw new HostError(
+    `automatic host discovery could not find a DSH Web host on ${platformLabel(platform)}.\n` +
+      `Tried:\n${attempts.join('\n')}\n${fixHint(caller)}`,
+  );
+}
 
-  const pids = [...new Set([...sockets.values()].map((socket) => socket.pid))];
-  const commands = readProcessCommands(pids);
+function uniquePids(sockets: Map<number, ListeningSocket>): number[] {
+  return [...new Set([...sockets.values()].map((socket) => socket.pid))];
+}
+
+function endpointsFromSockets(
+  sockets: Map<number, ListeningSocket>,
+  commands: Map<number, string>,
+): HostEndpoint[] {
   const candidates: { endpoint: HostEndpoint; score: number }[] = [];
   for (const [port, socket] of sockets) {
     const command = commands.get(socket.pid) ?? socket.command;
@@ -324,13 +621,10 @@ export function discoverLoopbackCandidates(): HostEndpoint[] {
       // A non-TCP-shaped NAME slipped through the parser; skip it.
     }
   }
-  candidates.sort((left, right) => left.score - right.score || compareEndpoint(left.endpoint, right.endpoint));
+  candidates.sort(
+    (left, right) => left.score - right.score || compareEndpoint(left.endpoint, right.endpoint),
+  );
   return candidates.map((candidate) => candidate.endpoint);
-}
-
-interface ListeningSocket {
-  pid: number;
-  command: string;
 }
 
 /** Parse the NAME/PID columns of `lsof -nP -iTCP -sTCP:LISTEN`. */
@@ -353,21 +647,69 @@ export function parseLsofListeners(output: string): Map<number, ListeningSocket>
   return sockets;
 }
 
-function readProcessCommands(pids: number[]): Map<number, string> {
+/**
+ * Parse `ss -ltnp`. Loopback only; a listener without a visible pid (another
+ * user's process) is skipped because it cannot be attributed or confirmed.
+ */
+export function parseSsListeners(output: string): Map<number, ListeningSocket> {
+  const sockets = new Map<number, ListeningSocket>();
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('State')) continue;
+    const local = /(?:127\.0\.0\.1|\[::1\]):(\d+)/.exec(trimmed);
+    if (local === null) continue;
+    const pidMatch = /pid=(\d+)/.exec(trimmed);
+    if (pidMatch === null) continue;
+    const port = Number(local[1]);
+    const pid = Number(pidMatch[1]);
+    if (!Number.isSafeInteger(port) || port <= 0 || port > 65_535) continue;
+    if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+    const command = /users:\(\("([^"]+)"/.exec(trimmed)?.[1] ?? '';
+    if (!sockets.has(port)) sockets.set(port, { pid, command });
+  }
+  return sockets;
+}
+
+/**
+ * Parse the JSON emitted by the Windows probe. `ConvertTo-Json` unwraps a
+ * single-element pipeline into an object, so accept both shapes.
+ */
+export function parseWindowsListeners(output: string): Map<number, ListeningSocket> {
+  const sockets = new Map<number, ListeningSocket>();
+  const trimmed = output.trim();
+  if (trimmed === '' || trimmed === 'null') return sockets;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return sockets;
+  }
+  const items: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+  for (const item of items) {
+    if (!isRecord(item)) continue;
+    const address = item.Address;
+    if (address !== '127.0.0.1' && address !== '::1') continue;
+    const port = Number(item.Port);
+    const pid = Number(item.Pid);
+    if (!Number.isSafeInteger(port) || port <= 0 || port > 65_535) continue;
+    if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+    const command = typeof item.Command === 'string' ? item.Command : '';
+    if (!sockets.has(port)) sockets.set(port, { pid, command });
+  }
+  return sockets;
+}
+
+function readProcessCommands(pids: number[], runner: CommandRunner): Map<number, string> {
   const commands = new Map<number, string>();
   if (pids.length === 0) return commands;
   try {
-    const output = execFileSync('ps', ['-p', pids.join(','), '-o', 'pid=,command='], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 10_000,
-    });
+    const output = runner({ file: 'ps', args: ['-p', pids.join(','), '-o', 'pid=,command='] });
     for (const line of output.split(/\r?\n/)) {
       const match = /^\s*(\d+)\s+(.*)$/.exec(line);
       if (match !== null) commands.set(Number(match[1]), match[2] ?? '');
     }
   } catch {
-    // ps is best-effort; the lsof COMMAND column remains as a fallback.
+    // ps is best-effort; the probe's own COMMAND column remains as a fallback.
   }
   return commands;
 }

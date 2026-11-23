@@ -17,7 +17,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   type SessionRow,
   asRecord,
-  defaultDshHome,
   SessionClient,
   sessionCwd,
   sessionTitle,
@@ -69,7 +68,12 @@ function readServerVersion(): string {
     try {
       const raw = readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8');
       const parsed = asRecord(JSON.parse(raw) as unknown);
-      if (parsed?.name === 'dsh-bridge' && typeof parsed.version === 'string') {
+      // Accept the historical package name too: `src/mcp.ts` in a build tree
+      // may resolve the manifest before the release rename lands.
+      if (
+        (parsed?.name === 'dsh-bridge-mcp' || parsed?.name === 'dsh-bridge') &&
+        typeof parsed.version === 'string'
+      ) {
         return parsed.version;
       }
     } catch {
@@ -349,6 +353,7 @@ function nestedTarget(args: Record<string, unknown>): Target {
 
 function connectClient(): Promise<SessionClient> {
   return SessionClient.connect({
+    caller: 'mcp',
     onDiscoveryNote: (message: string) => {
       writeDiagnostic(message);
     },
@@ -374,7 +379,6 @@ async function callSend(args: Record<string, unknown>): Promise<ToolCallPayload>
     );
   }
 
-  const dshHome = defaultDshHome();
   const client = await connectClient();
   const outcome = await sendMessage({
     client,
@@ -385,7 +389,7 @@ async function callSend(args: Record<string, unknown>): Promise<ToolCallPayload>
     mode: 'queue',
     timeoutMs: timeoutMsFor(args, 'arguments'),
     detach: optionalBooleanField(args, 'detach', 'arguments') ?? false,
-    index: new SendIndex(dshHome),
+    index: new SendIndex(client.dshHome),
   });
   return outcomePayload(outcome);
 }
@@ -396,9 +400,10 @@ async function callResult(args: Record<string, unknown>): Promise<ToolCallPayloa
   if (rpcId === undefined || rpcId.trim() === '') {
     throw new ToolInputError('arguments.rpcId is required and must be a non-empty string');
   }
+  const client = await connectClient();
   const outcome = await resultMessage({
-    client: await connectClient(),
-    index: new SendIndex(defaultDshHome()),
+    client,
+    index: new SendIndex(client.dshHome),
     rpcId,
     wait: optionalBooleanField(args, 'wait', 'arguments') ?? false,
     timeoutMs: timeoutMsFor(args, 'arguments'),
@@ -494,7 +499,8 @@ function initializeResult(params: Record<string, unknown> | undefined): Record<s
     instructions:
       'dsh-bridge hands one message to an existing DeepSeek Harness session. Use dsh_sessions to ' +
       'find a session id, dsh_send to prompt it (waiting for its own turn), dsh_result to read a ' +
-      'detached send back. Host and DSH home come from DSH_BRIDGE_HOST / DSH_HOME.',
+      'detached send back. Host and DSH home come from DSH_BRIDGE_HOST / DSH_HOME, the optional ' +
+      'dsh-bridge config file, or platform discovery.',
   };
 }
 

@@ -10,7 +10,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { BridgeError } from './errors.js';
-import { SessionClient, defaultDshHome, sessionCwd, sessionTitle, sessionUpdatedAt } from './client.js';
+import { SessionClient, sessionCwd, sessionTitle, sessionUpdatedAt } from './client.js';
 import { filterSessions, hasSelector, type Target } from './resolve.js';
 import { sendMessage } from './run.js';
 import { isNodeVersionSupported, nodeVersionMessage } from './runtime.js';
@@ -34,10 +34,14 @@ Target flags (exactly one family for send):
   --latest                newest updatedAt among the filtered rows
 
 Global:
-  --host <url>            DSH Web origin (default: $DSH_BRIDGE_HOST, then loopback discovery)
-  --dsh-home <dir>        DSH home for credentials + send index (default: $DSH_HOME or ~/.dsh)
+  --host <url>            DSH Web origin (default: $DSH_BRIDGE_HOST, config file, then discovery)
+  --dsh-home <dir>        DSH home for credentials + send index
+                          (default: $DSH_HOME, config file dshHome, or ~/.dsh)
   --json                  print one JSON object instead of plain text
   -h, --help              this help
+
+Config file (optional): \${XDG_CONFIG_HOME:-~/.config}/dsh-bridge/config.json
+  keys: url, host, dshHome; unknown keys or bad JSON are errors.
 
 Exit codes: 0 completed/pending, 2 timeout, 3 turn error/cancelled, 1 local error.
 `;
@@ -46,7 +50,8 @@ class CliError extends Error {}
 
 interface CliOptions {
   host?: string;
-  dshHome: string;
+  /** Only set when `--dsh-home` was passed; resolution is config-aware. */
+  dshHome?: string;
   json: boolean;
   target: Target;
   timeoutMs: number;
@@ -132,7 +137,6 @@ function parseCli(argv: string[]): CliOptions {
   if (/[\r\n]/.test(from)) throw new CliError('--from must not contain newlines');
 
   const options: CliOptions = {
-    dshHome: values['dsh-home'] ?? defaultDshHome(),
     json: values.json === true,
     target,
     timeoutMs: parseTimeout(values.timeout),
@@ -145,6 +149,7 @@ function parseCli(argv: string[]): CliOptions {
     positionals,
   };
   if (values.host !== undefined) options.host = values.host;
+  if (values['dsh-home'] !== undefined) options.dshHome = values['dsh-home'];
   if (values.limit !== undefined) options.limit = parsePositiveInteger(values.limit, '--limit');
   if (values['rpc-id'] !== undefined) options.rpcId = values['rpc-id'];
   return options;
@@ -172,7 +177,8 @@ function sortRows(rows: SessionRow[]): SessionRow[] {
 async function openClient(options: CliOptions): Promise<SessionClient> {
   return SessionClient.connect({
     ...(options.host === undefined ? {} : { host: options.host }),
-    dshHome: options.dshHome,
+    ...(options.dshHome === undefined ? {} : { dshHome: options.dshHome }),
+    caller: 'cli',
   });
 }
 
@@ -228,7 +234,7 @@ async function commandSend(options: CliOptions): Promise<number> {
     timeoutMs: options.timeoutMs,
     detach: options.detach,
     force: options.force,
-    index: new SendIndex(options.dshHome),
+    index: new SendIndex(client.dshHome),
   });
   printResult(outcome.result, { json: options.json, detach: options.detach }, outcome.timeoutHint);
   if (
@@ -255,7 +261,7 @@ async function commandResult(options: CliOptions): Promise<number> {
   const client = await openClient(options);
   const outcome = await resultMessage({
     client,
-    index: new SendIndex(options.dshHome),
+    index: new SendIndex(client.dshHome),
     rpcId: options.rpcId,
     wait: options.wait,
     timeoutMs: options.timeoutMs,

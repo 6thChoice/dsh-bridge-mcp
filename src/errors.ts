@@ -18,6 +18,9 @@ export class BridgeError extends Error {
 /** Credentials file / record / secret problems. */
 export class CredentialsError extends BridgeError {}
 
+/** The optional user config file is unreadable, malformed, or has unknown keys. */
+export class ConfigError extends BridgeError {}
+
 /** HTTP status, envelope, or endpoint mismatch. */
 export class ProtocolError extends BridgeError {}
 
