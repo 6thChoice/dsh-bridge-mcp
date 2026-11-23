@@ -55,9 +55,12 @@ HTTP 401 (secret rotated since DSH started → restart DSH), HTTP 403 (authority
 {"type":"client-request","rpcId":"<any unique local id>","method":"<endpoint>","payload":{"args":{...}}}
 ```
 
-Response `{"type":"server-response","rpcId":"...","result":{"ok":true,"value":...}}` or
-`result.ok === false` with `{code, message, details}`. HTTP 401/403/404 can occur before the
-envelope and must be surfaced with their status.
+Response `{"type":"server-response","rpcId":"...","result":{"ok":true,"value":...}}`.
+
+Failures appear in two shapes and the client must accept both, reporting the real code:
+host 0.2.x nests them as `result.error = {code, message, details}`, host 0.1.5 nests them as
+`result.ok === false` with the same object. HTTP 401/403/404 can occur before the envelope and
+must be surfaced with their status. (T1 correction, verified against both hosts.)
 
 The `payload.args` object is keyed by **Host parameter name**:
 
