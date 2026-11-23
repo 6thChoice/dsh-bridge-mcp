@@ -37,6 +37,16 @@ No new core logic. Wiring, documentation, and cross-harness verification.
   `~/.gemini/config/mcp_config.json` — currently an **empty file**, so write a well-formed
   `{"mcpServers": {...}}` object.
 - Do not assume a server-name convention beyond the one you document; pick `dsh-bridge` for both.
+- Claude Code CLI syntax (verified locally, `claude mcp add --help`):
+  `claude mcp add <name> [--scope user] -- <command> [args...]`, env via `-e KEY=value`.
+- Antigravity: global config `~/.gemini/config/mcp_config.json`, top-level `mcpServers` object,
+  stdio entries `{command, args?, env?, cwd?}`; remote entries use `serverUrl` instead.
+  Sources: [Microsoft Learn — Azure MCP in Antigravity](https://learn.microsoft.com/bs-latn-ba/Azure/developer/Azure-mcp-server/get-started/tools/anti-gravity#1),
+  [bifrost docs](https://github.com/brokkai/bifrost/blob/6c889183c1b0e81c74aa80f6d362bc547315b99b/docs/src/content/docs/antigravity.md).
+  A workspace-scoped alternative is claimed to exist (`.agents/mcp_config.json` in the project
+  root) but is **unverified** — document the global file as the supported path and confirm
+  empirically during the human round trip; if the IDE rejects the file, say so in the results
+  section rather than guessing again.
 
 ## Notes
 
