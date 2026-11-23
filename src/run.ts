@@ -181,10 +181,16 @@ export function collectToolCalls(
     }
     if (event.type === 'tool/result') {
       const message = asRecord(event.data.message);
+      const content = message?.content;
+      const firstBlock = Array.isArray(content) ? asRecord(content[0]) : undefined;
+      // 0.2.x carries the id at the top level; 0.1.x only in
+      // `message.source.callId` and `message.content[0].toolCallId` (spec §3.5).
       const callId =
         stringField(message, 'toolCallId') ??
         stringField(event.data, 'callId') ??
-        stringField(message, 'callId');
+        stringField(message, 'callId') ??
+        stringField(asRecord(message?.source), 'callId') ??
+        stringField(firstBlock, 'toolCallId');
       if (callId === undefined) continue;
       const call = byCallId.get(callId);
       if (call === undefined) continue;

@@ -82,6 +82,46 @@ test('tool calls keep call order and need a matching result', () => {
   ]);
 });
 
+test('tool results link through the 0.1.x message shape (source.callId, content[0].toolCallId)', () => {
+  const events = [
+    event('tool/call', 10, { turn: 1, callId: 'c1', name: 'bash' }),
+    // 0.1.x: the message has no top-level id; the call id is in source.callId
+    // and content[0].toolCallId (spec §3.5).
+    event('tool/result', 11, {
+      turn: 1,
+      message: {
+        id: 'm1',
+        role: 'tool',
+        source: { kind: 'tool', callId: 'c1' },
+        content: [{ type: 'tool-result', toolCallId: 'c1' }],
+      },
+    }),
+    event('tool/call', 12, { turn: 1, callId: 'c2', name: 'read' }),
+    // Only content[0].toolCallId is present.
+    event('tool/result', 13, {
+      turn: 1,
+      message: { id: 'm2', role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c2' }] },
+    }),
+    event('tool/call', 14, { turn: 1, callId: 'c3', name: 'glob' }),
+    // Only source.callId is present, and the tool failed.
+    event('tool/result', 15, {
+      turn: 1,
+      message: {
+        id: 'm3',
+        role: 'tool',
+        source: { kind: 'tool', callId: 'c3' },
+        content: [{ type: 'tool-result', toolCallId: 'c3', isError: true }],
+      },
+      error: { code: 'E' },
+    }),
+  ];
+  assert.deepEqual(collectToolCalls(events, 1), [
+    { name: 'bash', ok: true },
+    { name: 'read', ok: true },
+    { name: 'glob', ok: false },
+  ]);
+});
+
 test('collectTurn carries the raw turn/end reason', () => {
   const events = [
     event('assistant/message', 1, { turn: 1, message: { content: [{ type: 'text', text: 'hi' }] } }),
