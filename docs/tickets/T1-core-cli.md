@@ -50,3 +50,234 @@ resolution, prompt/await, result rendering, plus the staging harness that proves
   temp `DSH_HOME`; wait for readiness before reading it.
 - Keep `send` from prompting a staging session that has no configured provider: pass
   `DEEPSEEK_API_KEY=dummy` + `DEEPSEEK_BASE_URL=http://127.0.0.1:<stub-port>` and `--no-open`.
+
+## Result
+
+Implemented 2026-11-23 by the T1 session (branch `main`).
+
+### What exists
+
+- `src/auth.ts` — `.credentials.yaml` reader (minimal block-YAML subset, fail-loud on missing
+  record / bad base64url / non-32-byte secret) and cookie minting per spec §3.1.
+- `src/host.ts` — origin parsing, `RpcTransport` (one envelope per call, explicit HTTP 401/403/404
+  and envelope/protocol errors), `--host` → `DSH_BRIDGE_HOST` → macOS `lsof` loopback discovery
+  confirmed with `session/list`.
+- `src/client.ts` — `SessionClient` (`listSessions`, `pageSession`, `prompt`, `followSession`,
+  generic `rpc`) plus `FollowStream`, which keeps the opening snapshot/cursor and exposes durable
+  events only (assistant-stream frames dropped).
+- `src/resolve.ts` — exact/prefix/title/cwd/`--latest` resolution, `session-` prefix agnostic,
+  candidate list capped at 10, no-selector error.
+- `src/run.ts` — `sendMessage` (follow-before-prompt baseline, queue/steer, inbox-record before
+  awaiting, own-turn matching, timeout, detach) and rendering helpers (`renderAssistantText`,
+  `sumUsage`, `collectToolCalls`, `reconstructTurn`, status mapping, exit codes).
+- `src/result.ts` — `SendIndex` (`$DSH_HOME/dsh-bridge/sends.jsonl`, best-effort append) and
+  `resultMessage` (index first, then 50 sessions × 2 tail pages; page-back reconstruction;
+  `--wait`).
+- `src/cli.ts` — `sessions|send|result`, hand-rolled via `node:util` `parseArgs`; plain stdout is
+  text only, `--json` one object; diagnostics on stderr; spec exit codes.
+- `src/errors.ts`, `src/runtime.ts`, `scripts/postbuild.mjs` — shared error taxonomy, Node
+  >=22.19 guard, executable-bit fix for `npm link` bins (extra modules beyond the ticket list).
+- `tests/` — 33 unit tests (auth, host/envelope, resolution, rendering/status/tool/usage,
+  runtime floor) and 8 staging integration tests (blocking, no-prefix, detach+result+wait,
+  timeout, queue-after-running-turn, toolCalls/usage via a real bash tool, index-less scan,
+  sessions/unknown rpcId). `tests/staging.ts` spawns the packaged `dsh web` with a temp
+  `DSH_HOME`, a stub model endpoint, and never touches a real session.
+
+### Deviations from the spec/ticket, with reasons
+
+1. **Stub wire format.** The ticket says the staging stub must speak OpenAI-completions. The
+   packaged 0.2.1-rc.2 `deepseek-official` route actually calls **Anthropic Messages**
+   (`POST /v1/messages`) against `DEEPSEEK_BASE_URL`; that is what the staging instance uses.
+   The stub therefore speaks both formats (`/v1/messages` and `/chat/completions`), selected by
+   path; tests exercise the Anthropic route. Reason: verified against the live staging process,
+   not assumed.
+2. **RPC error envelope.** The live 0.1.5 desktop nests errors as
+   `result.error.{code,message,details}`; spec §3.2 shows them directly on `result`. The client
+   accepts both and always reports the real code/message (verified with
+   `session/agent-busy` from `session/page` on subagent sessions).
+3. **Read-back reconstruction.** A follow opening snapshot is capped and reports `hasMore`
+   (live example below: cursor 654, 361 records). `result` therefore pages backwards with
+   `session/page` from the follow cursor until the target `user/message` and its `turn/start`
+   are present, rather than trusting the snapshot. `send` still uses the snapshot only for its
+   baseline cursor (and for steer turn context).
+4. **`sessions --json` shape.** Spec §8 fixes the plain line format but not JSON; JSON is the
+   filtered raw `session/list` rows (same fields callers already resolve against).
+5. **`from` on index-less read-back.** The durable log does not record the sender label, so
+   `result` found by scanning reports `"from": "unknown"`; the local index carries the real value.
+6. **Timeout in plain mode.** To keep "stdout is only assistant text", the rpcId and read-later
+   hint go to stderr on timeout; `--json` carries both fields in the object.
+7. **CLI `from` default.** `--from` → `$DSH_BRIDGE_FROM` → `"cli"` (spec did not name a CLI
+   default; MCP's `"mcp"` default remains T2's).
+8. **Subagent sessions.** `session/page` on a subagent session returns `session/agent-busy`
+   (host policy: use the parent address). The bounded `result` scan skips such rows; sending to
+   them stays out of scope and fails loudly.
+
+### Acceptance evidence (actual commands and output)
+
+Node used: `v24.19.0` (engines `>=22.19`; a runtime guard prints a clear error on older Node).
+
+**1. Typecheck**
+
+```console
+$ npm run typecheck
+> dsh-bridge@0.1.0 typecheck
+> tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit
+$ echo $?
+0
+```
+
+**2/8. Full test suite (`npm test`)**
+
+```console
+$ npm test
+…
+✔ blocking send returns exactly the assistant text and records the rpcId (784ms)
+✔ --no-prefix sends the raw text (110ms)
+✔ --detach returns an rpcId, result is pending then completed (1662ms)
+✔ timeout exits 2, names the rpcId, and hints how to read it later (1035ms)
+✔ queued send returns its own turn, never the running turn (2635ms)
+✔ toolCalls and usage are populated from a real bash tool turn (187ms)
+✔ result scans the newest sessions when the send index is gone (175ms)
+✔ sessions --json lists staging rows; unknown rpcId is a local error (108ms)
+ℹ tests 41
+ℹ suites 0
+ℹ pass 41
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 12213
+```
+
+**3. Live read-only `sessions` and resolution (desktop host, port 49904)**
+
+```console
+$ node dist/cli.js sessions --limit 3
+f192cdb2-f1a8-44c7-96f5-d4df24fb584b	true	2026-11-23T08:21:16.263Z	You are implementing ticket T1	/Users/zhouxuancheng/Documents/Agent/deepseek-harness
+f441b634-6e45-4b8a-8411-a0baa39853a1	false	2026-11-23T08:20:52.758Z	你在为私有仓 FundingRateArbC（git	/Users/zhouxuancheng/CodeBase/deepseek-harness/polymarket
+session-474d640c-0968-452a-9ee3-5bec233690fa	false	2026-11-23T08:20:05.930Z	跨 harness 向 DeepSeek 会话发消息	/Users/zhouxuancheng/Documents/Agent/deepseek-harness
+$ echo $?
+0
+
+$ node dist/cli.js sessions --json | node -e '…count rows…'
+{"rows":3050,"first":"f192cdb2-f1a8-44c7-96f5-d4df24fb584b","title":"You are implementing ticket T1"}
+$ echo $?
+0
+```
+
+Auto-discovery (no `--host`) resolved and confirmed the desktop host by itself:
+
+```console
+$ node dist/cli.js sessions --limit 1
+f192cdb2-f1a8-44c7-96f5-d4df24fb584b	true	2026-11-23T08:21:16.263Z	You are implementing ticket T1	/Users/zhouxuancheng/Documents/Agent/deepseek-harness
+$ echo $?
+0
+```
+
+Selectors (read-only `sessions`; output cut to `sessionId	title`):
+
+```console
+$ node dist/cli.js sessions --session f192cdb2-f1a8-44c7-96f5-d4df24fb584b | cut -f1,4
+f192cdb2-f1a8-44c7-96f5-d4df24fb584b	You are implementing ticket T1
+$ node dist/cli.js sessions --session 474d640c | cut -f1,4
+session-474d640c-0968-452a-9ee3-5bec233690fa	跨 harness 向 DeepSeek 会话发消息
+$ node dist/cli.js sessions --title 'ticket t1' | cut -f1,4
+f192cdb2-f1a8-44c7-96f5-d4df24fb584b	You are implementing ticket T1
+$ node dist/cli.js sessions --cwd /Users/zhouxuancheng/Documents/Agent/deepseek-harness --limit 2 | cut -f1,4
+f192cdb2-f1a8-44c7-96f5-d4df24fb584b	You are implementing ticket T1
+session-474d640c-0968-452a-9ee3-5bec233690fa	跨 harness 向 DeepSeek 会话发消息
+$ node dist/cli.js sessions --latest | cut -f1,4
+f192cdb2-f1a8-44c7-96f5-d4df24fb584b	You are implementing ticket T1
+```
+
+Ambiguity and no-selector. `send` resolves **before** opening a follow stream or prompting, so
+these fail without touching the live session:
+
+```console
+$ node dist/cli.js send probe --session f 2>&1 >/dev/null | head -3
+dsh-bridge: target --session f matches 193 sessions; narrow it:
+  f192cdb2-f1a8-44c7-96f5-d4df24fb584b	You are implementing ticket T1	/Users/zhouxuancheng/Documents/Agent/deepseek-harness	2026-11-23T08:21:16.263Z
+  f441b634-6e45-4b8a-8411-a0baa39853a1	你在为私有仓 FundingRateArbC（git	/Users/zhouxuancheng/CodeBase/deepseek-harness/polymarket	2026-11-23T08:20:52.758Z
+$ echo ${PIPESTATUS[0]}
+1
+$ node dist/cli.js send probe 2>&1 >/dev/null
+dsh-bridge: send needs a target: pass --session <id|prefix>, --title <substr>, --cwd <path>, or --latest
+$ echo $?
+1
+```
+
+Live read-only follow (no prompt) and live read-back of an existing turn:
+
+```console
+$ node --input-type=module -e '…SessionClient.followSession on session-474d…'
+host http://127.0.0.1:49904 session session-474d640c-0968-452a-9ee3-5bec233690fa
+follow cursor 654 records 361 durable events 361
+
+$ time node dist/cli.js result --rpc-id cbad83eb-ec56-433b-b3d4-c89677a30d77 --json
+{"sessionId":"session-474d640c-0968-452a-9ee3-5bec233690fa","turn":4,"status":"completed",
+ "textLen":935,"textStart":"Decisions locked. Writing the spec + tickets to an independent repo, then dispatching implementers.\n",
+ "toolCalls":[{"name":"bash","ok":true},{"name":"bash","ok":true},{"name":"write","ok":true}],
+ "usage":{"inputTokens":4576,"outputTokens":15221,"cacheReadTokens":1731072}}
+real	0m1.034s
+$ echo $?
+0
+```
+
+No send was ever issued to the live host; all `send` tests targeted staging.
+
+**4. README quickstart** — the exact commands, run through the linked `dsh-bridge` bin against a
+staging host:
+
+```console
+$ dsh-bridge sessions --limit 5
+session-588935a5-c94b-4276-9a30-fc6d5b6bc93c	false	2026-11-23T08:43:42.834Z		/Users/zhouxuancheng/CodeBase/dsh-bridge
+$ SESSION=$(dsh-bridge sessions --latest | cut -f1); dsh-bridge send "What are you working on?" --session "$SESSION"
+SESSION=session-588935a5-c94b-4276-9a30-fc6d5b6bc93c
+QUICKSTART-OK
+$ echo $?
+0
+```
+
+`npm link` produced a working bin (the build marks bins executable so the symlink is runnable):
+
+```console
+$ which dsh-bridge
+/Users/zhouxuancheng/.nvm/versions/node/v24.19.0/bin/dsh-bridge
+$ dsh-bridge --help | head -1
+dsh-bridge — send one message to an existing DeepSeek Harness session
+$ npm ls --omit=dev
+dsh-bridge@0.1.0 /Users/zhouxuancheng/CodeBase/dsh-bridge
+└── (empty)
+```
+
+### Module boundaries for T2 (MCP shell)
+
+Everything T2 needs is process-level and print-free; the CLI owns output/policy:
+
+```ts
+import { SessionClient } from './client.js';
+import { resolveTarget } from './resolve.js';
+import { sendMessage, exitCodeForStatus } from './run.js';
+import { SendIndex, resultMessage } from './result.js';
+
+const client = await SessionClient.connect({ host, dshHome });
+const index = new SendIndex(dshHome);
+const { result, exitCode, timeoutHint } = await sendMessage({
+  client, target, text, from, prefix: true, mode: 'queue',
+  timeoutMs, detach: false, force: false, index,
+});
+```
+
+- `sessionCursor`, `sessionTitle`, `sessionCwd`, `sessionUpdatedAt`, `stripSessionPrefix` are
+  exported from `client.ts` for `dsh_sessions` formatting.
+- `SendIndex` implements `SendIndexSink`; pass it to `sendMessage` so `dsh_result` works.
+- `SendResult` is already the §6 JSON object (`turn` absent for pending/timeout before a turn).
+  T2 should return it as `structuredContent` and `JSON.stringify(result)` (or its `text`) as the
+  text block; `exitCode`/`timeoutHint` are advisory for CLI only.
+- Core throws `BridgeError` subclasses (`CredentialsError`, `HostError`, `ProtocolError`,
+  `RpcError`, `ResolutionError`, `AmbiguousTargetError`, `ResultNotFoundError`); map those to
+  MCP `isError: true` text. Nothing core writes to stdout/stderr, so the JSON-RPC channel stays
+  clean; `SendOutcome.timeoutHint` is the only diagnostic string produced.
+- Add `"dsh-bridge-mcp": "dist/mcp.js"` to `package.json` bins; `scripts/postbuild.mjs`
+  already chmods `dist/mcp.js` if it exists.
+- Node floor helper: `isNodeVersionSupported()` / `nodeVersionMessage()` in `runtime.ts`.
