@@ -15,6 +15,10 @@ DSH checkout. Zero runtime dependencies (Node's built-in `fetch` + `WebSocket`).
 - A running DSH Web host: the desktop app, or `dsh web --no-open`
 - macOS for automatic host discovery (`lsof`); elsewhere pass `--host`
 
+Docs: [`docs/install.md`](docs/install.md) — wiring into Claude Code and Antigravity, GUI `PATH`
+traps, troubleshooting · [`docs/usage.md`](docs/usage.md) — all flags, JSON contract, worked
+examples · [`docs/spec.md`](docs/spec.md) — the binding contract and the verified wire facts.
+
 ## Quickstart
 
 ```sh
