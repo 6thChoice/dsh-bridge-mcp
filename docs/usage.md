@@ -94,7 +94,13 @@ machine, cleared home), it scans the 50 most recently updated sessions for the m
 `status` ∈ `completed | error | cancelled | timeout | pending`. Mapping from `turn/end`:
 `completed`→`completed`, `max-tokens`→`completed` (raw kind kept in `reason`), `aborted`→`cancelled`,
 `blocked`/`error`/unknown→`error`. `pending` only appears for `--detach` and for `result` on a turn
-that has not ended. `sessions --json` returns the raw `session/list` rows instead.
+that has not ended. While `pending`, `text` is empty — plain mode prints nothing and exits 0, and what
+settled so far is available only as `--json`'s optional `partialText`. A `timeout` does keep its
+settled `text`. `sessions --json` returns the raw `session/list` rows instead.
+
+`pending` means "no verdict in the durable log yet"; it can also mean the prompt was dropped before
+admission or fell outside the read window, so treat it as *unknown*, not as proof the turn is alive
+(see `docs/backlog.md` P2-3).
 
 ### Exit codes
 

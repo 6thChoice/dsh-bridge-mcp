@@ -181,6 +181,11 @@ turn, joined with a single blank line. No prefixes, no headers, no ANSI. Exit 0.
 }
 ```
 
+`text` is empty while `status` is `pending` (an unfinished turn has no final answer, so a plain-mode
+caller must never see text with exit 0). Whatever settled so far on a pending turn appears only in
+`--json` as an optional `partialText` field. `timeout` still carries the settled `text`, because a
+timed-out turn keeps making progress and the caller may want what exists.
+
 Status mapping from `turn/end.reason.kind`: `completed` → `completed`; `max-tokens` →
 `completed`; `aborted` → `cancelled`; `blocked` / `error` / unknown → `error`.
 `reason` always carries the raw kind so nothing is lost.
