@@ -1,0 +1,26 @@
+{
+  "name": "dsh-bridge",
+  "version": "0.1.0",
+  "description": "Send one message to a specific DeepSeek Harness session and read its answer back.",
+  "type": "module",
+  "bin": {
+    "dsh-bridge": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/postbuild.mjs",
+    "build:tests": "tsc -p tsconfig.test.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "npm run build && npm run build:tests && node --test --test-concurrency=1 \"dist-test/tests/*.test.js\"",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
+  }
+}
