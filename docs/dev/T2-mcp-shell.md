@@ -1,6 +1,6 @@
 # T2 — MCP stdio shell
 
-Implements §10 of [`../spec.md`](../spec.md) on top of T1's core module.
+Implements §10 of [`../spec.md`](../protocol.md) on top of T1's core module.
 
 ## Deliverables
 
@@ -176,9 +176,9 @@ for (const line of lines) {
 }' 
 id=1 isError=false
 content[0].text (tabs shown as  ⇥ ):
-5e9fdd65-0cc7-4038-b57d-66af877d3c67 ⇥ true ⇥ 2026-11-23T08:46:35.506Z ⇥ You are implementing ticket T2 ⇥ /Users/zhouxuancheng/Documents/Agent/deepseek-harness
-f192cdb2-f1a8-44c7-96f5-d4df24fb584b ⇥ false ⇥ 2026-11-23T08:21:16.263Z ⇥ You are implementing ticket T1 ⇥ /Users/zhouxuancheng/Documents/Agent/deepseek-harness
-structuredContent.sessions: 2 rows; first = 5e9fdd65-0cc7-4038-b57d-66af877d3c67 | running=true | title="You are implementing ticket T2" | cwd=/Users/zhouxuancheng/Documents/Agent/deepseek-harness
+5e9fdd65-0cc7-4038-b57d-66af877d3c67 ⇥ true ⇥ 2026-11-23T08:46:35.506Z ⇥ You are implementing ticket T2 ⇥ /Users/<user>/Documents/Agent/deepseek-harness
+f192cdb2-f1a8-44c7-96f5-d4df24fb584b ⇥ false ⇥ 2026-11-23T08:21:16.263Z ⇥ You are implementing ticket T1 ⇥ /Users/<user>/Documents/Agent/deepseek-harness
+structuredContent.sessions: 2 rows; first = 5e9fdd65-0cc7-4038-b57d-66af877d3c67 | running=true | title="You are implementing ticket T2" | cwd=/Users/<user>/Documents/Agent/deepseek-harness
 ```
 
 With `DSH_BRIDGE_HOST`/`DSH_HOME` unset the same call succeeds through auto-discovery (the live
@@ -234,7 +234,7 @@ The symlink case is the `npm link` shape (`process.argv[1]` is the link, not the
 ### Notes for T3
 
 - **Launch line:** `dsh-bridge-mcp` (after `npm link`), or
-  `node /Users/zhouxuancheng/CodeBase/dsh-bridge/dist/mcp.js`. No arguments; it speaks MCP stdio
+  `node /Users/<user>/CodeBase/dsh-bridge/dist/mcp.js`. No arguments; it speaks MCP stdio
   and exits 0 when its stdin closes.
 - **Environment it honours:** `DSH_BRIDGE_HOST` (pin the host, e.g. `http://127.0.0.1:49904`;
   otherwise macOS loopback discovery), `DSH_HOME` (credentials + send index; default `~/.dsh`),

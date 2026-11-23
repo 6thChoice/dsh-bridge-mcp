@@ -1,6 +1,12 @@
-# dsh-bridge — Specification (v1)
+# Protocol and wire contract
 
-Status: decided. All decisions below are human-owned and closed; implementers do not reopen them.
+This is what `dsh-bridge-mcp` depends on: the slice of a running DeepSeek Harness host's own HTTP/WS
+surface that the client uses, verified against a real host and written down so failures are
+debuggable. It is **not** a published DSH API — DSH owes nothing to this document, and a DSH release
+can change any of it. When that happens, `dsh-bridge doctor` shows the failure and this file is where
+to record the new shape.
+
+Verified against: DSH `0.2.1-rc.2` (desktop and `dsh web`). Sections marked otherwise are best-effort.
 
 ## 1. Purpose
 

@@ -94,7 +94,7 @@ Default is print-only; `--write` is allowed **only** for `claude-code` (delegate
 a timestamped `.bak-dsh-bridge-mcp-*`). Everything else prints. Always print the exact command that
 would be run.
 
-`examples/` holds one file per harness with the same blocks, plus `examples/http-remote.md` for
+`examples/` holds one file per harness with the same blocks, plus `examples/remote-host.md` for
 driving a remote DSH over the URL-token path.
 
 ## Repository layout after this release
@@ -135,3 +135,12 @@ docs/dev/               # T1/T2/T3 tickets + release notes: process evidence, no
 5. README (EN + zh) explains the two-path auth, the plugin-vs-client difference, and the known
    limitations, with working links.
 6. No tracked file contains `/Users/` or a username.
+
+## Status (2026-11-23)
+
+| Slice | State | Evidence |
+|---|---|---|
+| R1 — rename to `dsh-bridge-mcp`, portable discovery, staging self-skip, de-machine docs | done | `docs/dev/R1-decouple.md` |
+| R2 — URL-token auth, `doctor`, `setup`, `examples/` | done | `docs/dev/R2-auth-and-dx.md` |
+| R3 — LICENSE/SECURITY/CONTRIBUTING/CHANGELOG/CI, README (EN+zh), docs reorg, packaging | done | this file; `git log` |
+| Publish (git push + `npm publish`) | owner step | needs the owner's GitHub credentials and npm login |

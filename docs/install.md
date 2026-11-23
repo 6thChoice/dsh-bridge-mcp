@@ -1,138 +1,140 @@
-# Install and wire it into other harnesses
+# Install and wiring
 
-`dsh-bridge` runs outside DSH. It needs no DSH plugin and no DSH rebuild; it talks to the
-running DSH Web host over its own HTTP/WS API.
+`dsh-bridge-mcp` runs outside DSH: nothing is added to a DSH profile, no plugin is installed, and no
+part of DSH is modified. It talks to a running DSH **Web host** over that host's own HTTP/WS surface,
+using a browser-equivalent session.
 
 ## 1. Install
 
 ```sh
-cd <path-to-dsh-bridge-mcp>
-npm install
-npm run build
-npm link          # puts dsh-bridge and dsh-bridge-mcp on PATH
+npm i -g dsh-bridge-mcp     # gives you dsh-bridge (CLI) and dsh-bridge-mcp (MCP server)
 ```
 
-Verify the install with one command:
+or run it without installing:
 
 ```sh
-npm run build:tests   # only needed for the staging half of scripts/verify.mjs
-node scripts/verify.mjs
+npx -y dsh-bridge-mcp
 ```
 
-It does a read-only round trip against the live DSH host and a full `send` round trip against a
-disposable staging instance (stub provider — no real model call, no real session touched).
-Recorded output of a passing run:
-
-```console
-── live host: auth + discovery + session/list (read-only)
-   host: http://127.0.0.1:49904
-   sessions: 3053
-   session-474d640c-…  running=true  跨 harness 向 DeepSeek 会话发消息
-── staging instance: send round trip (stub provider, no real model call)
-   host: http://127.0.0.1:56740
-   session: session-5f04a71a-…
-   stdout: "VERIFY-PONG"
-   detached rpcId: 90eb72e9-…
-   result: status=completed turn=2 toolCalls=0
-verify: OK — live auth/list works (3053 sessions) and a staging send returned its own turn's answer.
-```
-
-## 2. Claude Code
-
-Register it (user scope). Run this from the checkout, after `npm link`:
+From source:
 
 ```sh
-claude mcp add --scope user dsh-bridge \
-  -e PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-  -e DSH_BRIDGE_FROM=claude-code \
-  -- "$(command -v node)" "$(pwd)/dist/mcp.js"
-
-claude mcp list | grep dsh-bridge
-# dsh-bridge: <absolute-path-to-node> <path-to-dsh-bridge-mcp>/dist/mcp.js - ✔ Connected
+git clone https://github.com/6thChoice/dsh-bridge-mcp
+cd dsh-bridge-mcp && npm install && npm run build && npm link
 ```
 
-Then, inside a Claude Code session, the tools are `dsh_send`, `dsh_result`, `dsh_sessions`.
+Node **>= 22.19**. Automatic host discovery uses `lsof` (macOS), `ss`/`lsof` (Linux) or
+`Get-NetTCPConnection` (Windows); if none is available, pass the host explicitly.
 
-CLI-only fallback (no MCP): from the Bash tool,
+## 2. First run: `doctor`
 
 ```sh
-dsh-bridge send "summarise where you got to" --cwd <absolute-path-to-session-cwd> --latest
+dsh-bridge doctor
 ```
 
-## 3. Antigravity
+It reports, and this is the whole troubleshooting story:
 
-Global config file `~/.gemini/config/mcp_config.json` (back it up first; an empty file is a valid
-starting point). Write:
+- which host it resolved, and how (`--host`, `DSH_BRIDGE_HOST`, config file, platform discovery);
+- which authentication path produced the session (`url-token` or `credentials`);
+- whether an authenticated `session/list` was accepted, its latency, and the visible session count;
+- for every failing check, the concrete next step.
+
+Exit code is `0` only when it could actually send. `--json` gives the same information as one stable
+object (see [`usage.md`](usage.md)).
+
+## 3. Authentication, and what you have to do (often nothing)
+
+| Path | When it applies | What the user does |
+|---|---|---|
+| **url-token** | you pass `--url` / set `DSH_BRIDGE_URL` (or put `url` with a token in the config file) | copy the URL that `dsh web` prints: `dsh web: http://127.0.0.1:<port>/?token=…` |
+| **credentials** | otherwise (including the desktop app) | nothing — the tool reads `$DSH_HOME/.credentials.yaml` and signs the browser cookie |
+
+The URL token wins when both are available. Neither the token nor the cookie is ever written to disk
+or printed. For a remote host you generally need the url-token path, because the credential record of
+a different machine is not available to you.
+
+The token is per-process and changes when DSH restarts. If a stored URL goes stale, `doctor` says so
+(HTTP 401 while expecting a 303) — copy the current URL again.
+
+### Optional config file
+
+`${XDG_CONFIG_HOME:-~/.config}/dsh-bridge/config.json`:
 
 ```json
 {
-  "mcpServers": {
-    "dsh-bridge": {
-      "command": "<absolute-path-to-node>",
-      "args": ["<path-to-dsh-bridge-mcp>/dist/mcp.js"],
-      "env": {
-        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-        "DSH_BRIDGE_FROM": "antigravity"
-      }
-    }
-  }
+  "url": "http://127.0.0.1:49904/?token=…",
+  "host": "http://127.0.0.1:49904",
+  "dshHome": "~/.dsh"
 }
 ```
 
-Fill the two placeholders from the machine running the IDE: `command -v node` for the
-interpreter and the checkout path for the script (both absolute — GUI apps do not run your
-shell rc).
+All keys are optional. `url` (with a token) selects the url-token path; `host` alone selects
+credentials; `dshHome` points at a non-default DSH home. Unknown keys are an error rather than being
+ignored, so a typo cannot silently change behaviour.
 
-Restart Antigravity (or reload its MCP servers) after editing.
+## 4. Wire it into a harness
 
-A workspace-scoped `.agents/mcp_config.json` is reported to exist in some Antigravity versions but
-is unverified here; the global file above is the supported path.
+`setup` prints a configuration block generated from **the machine running it** — it uses the absolute
+`node` binary and the installed `dist/mcp.js` when running from a checkout, or `npx -y dsh-bridge-mcp`
+when running from an npm install:
 
-## 4. Why the absolute paths and the explicit `PATH`
+```sh
+dsh-bridge setup claude-code      # print only
+dsh-bridge setup claude-code --write   # apply it
+```
 
-GUI apps do not inherit your shell `PATH`. Two failures this avoids:
+| harness | output form | `--write` |
+|---|---|---|
+| `claude-code` | `claude mcp add …` command + JSON | yes (runs `claude mcp add --scope user`) |
+| `antigravity` | `mcpServers` JSON | yes (merges into `~/.gemini/config/mcp_config.json`, timestamped backup, refuses to clobber without `--force`) |
+| `cursor`, `cline`, `continue`, `zed`, `codex` | that harness's own format (JSON / YAML / TOML) | no — print only |
+| `raw` | the plain JSON block | no |
 
-1. **`node` not found** — a bare `dsh-bridge-mcp` command or a bare `node` in the config fails when
-   the IDE was launched from Finder/Dock, because the shell rc that puts Node on `PATH` never ran.
-2. **host discovery fails** — discovery spawns a platform probe (`lsof` on macOS/Linux, `ss` first
-   on Linux, `Get-NetTCPConnection` through PowerShell on Windows). With an empty `PATH` the probe
-   cannot spawn and the tool reports `automatic host discovery could not find a DSH Web host …`
-   with `cannot run: spawnSync … ENOENT` in the "Tried" lines. Adding the system `PATH` (or
-   pinning `DSH_BRIDGE_HOST`) fixes it.
+Ready-made copies for each live in [`../examples/`](../examples/), including
+[`remote-host.md`](../examples/remote-host.md) and [`cli-only.md`](../examples/cli-only.md).
+
+## 5. Why absolute paths and an explicit `PATH`
+
+GUI-launched harnesses do not inherit your shell `PATH`. Two failures this avoids, both observed in
+practice:
+
+1. **`node` not found** — a bare `dsh-bridge-mcp` command or a bare `node` fails when the IDE was
+   started from a launcher (Finder, Dock, a desktop file) that only knows the system path.
+2. **host discovery fails** — discovery enumerates loopback listeners; with an empty `PATH` it cannot
+   spawn its probe and reports that it could not enumerate sockets. `setup` therefore emits
+   `PATH=/usr/bin:/bin:/usr/sbin:/sbin` (or the platform equivalent) for GUI harnesses.
 
 Pinning `DSH_BRIDGE_HOST=http://127.0.0.1:<port>` also works, but the port can change when DSH
-restarts; the `PATH` form keeps auto-discovery alive and needs no maintenance. The optional
-config file (`${XDG_CONFIG_HOME:-~/.config}/dsh-bridge/config.json`) pins both without touching
-the IDE config.
+restarts. Supplying the `PATH` keeps automatic discovery alive and needs no maintenance.
 
-## 5. Reference-machine facts
+## 6. Verifying a source checkout end to end
 
-| Item | Value on the reference machine |
-|---|---|
-| Live host | `http://127.0.0.1:49904` (DSH desktop app, `dsh` 0.1.5-rc.2) |
-| Credentials | `~/.dsh/.credentials.yaml` → `client-connection/browser-session` |
-| Send index | `~/.dsh/dsh-bridge/sends.jsonl` (append-only, shared by CLI and MCP) |
-| Staging binary for tests | `$DSH_BIN`, else `dsh` on `PATH`, else the macOS app bundle |
+```sh
+npm run build && npm run build:tests
+node scripts/verify.mjs
+```
 
-## 6. Troubleshooting
+It performs a read-only round trip against the live host plus a full `send` round trip against a
+throwaway staging instance (temp `DSH_HOME`, local stub model provider — no real model call, no real
+session touched), so you can prove an install without spending a token or disturbing a session.
+
+## 7. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| HTTP **401** on every call | the cookie secret in `~/.dsh/.credentials.yaml` rotated after DSH started, or `DSH_HOME` points at another install | restart DSH, then retry; or pass the right `--dsh-home` / `DSH_HOME` |
-| HTTP **403** | the authority in the request does not match the credential's authority, or `Host` is not loopback/trusted | address the host exactly as DSH prints it (`127.0.0.1:<port>`, not `localhost`) |
-| `automatic host discovery could not find a DSH Web host` (a `cannot run: … ENOENT` line) | empty `PATH` (GUI launch) or the probe binary is missing | add `PATH` to the MCP `env`, pin `DSH_BRIDGE_HOST`, or set `host` in the config file |
-| config file error naming a path | that file is malformed, has unknown keys, or has a non-string value | fix it, or move/delete `${XDG_CONFIG_HOME:-~/.config}/dsh-bridge/config.json` |
-| `credentials missing` | `~/.dsh/.credentials.yaml` has no `client-connection/browser-session` record | start DSH once with a Web host so the record is minted |
+| HTTP **401** on every call | the cookie or the credential secret rotated after DSH started | restart DSH, then retry; with the url-token path, copy the freshly printed URL |
+| non-303 while expecting a redirect | the launch URL is stale, or the host is not a DSH Web host | re-copy the URL; confirm the origin with `doctor` |
+| HTTP **403** | the authority does not match what the host trusts | address the host exactly as it prints it (`127.0.0.1:<port>`, not `localhost`) |
+| `cannot enumerate listening sockets` | empty `PATH` under a GUI launch | add `PATH` to the MCP `env`, or pin `DSH_BRIDGE_HOST` |
+| no credentials found | `$DSH_HOME/.credentials.yaml` has no `client-connection/browser-session` record | start DSH once with its Web host so the record is minted, or use the url-token path |
 | exit 2, `status: "timeout"` | the turn outlived `--timeout` | finish it with `dsh-bridge result --rpc-id <id> --wait`, or use `--detach` up front |
 | target matches many sessions | selector too loose | add `--cwd`, a longer id prefix, or `--title` |
-| multiple DSH installs, wrong sessions | auto-discovery picked another host | pass `--host` (CLI) / `DSH_BRIDGE_HOST` (MCP) |
-| MCP tool missing in the IDE | config not reloaded, or the command path is wrong | restart the IDE; run the configured command by hand with a JSON-RPC line on stdin |
+| wrong sessions listed (several DSH installs) | auto-discovery picked another host | pass `--host` (CLI) / `DSH_BRIDGE_HOST` (MCP), or set `dshHome` in the config file |
+| MCP tool missing in the IDE | config not reloaded, or command path wrong | restart the IDE; run the configured command by hand with a JSON-RPC line on stdin |
 
-## 7. Manual verification (human steps)
+## 8. Manual check in each harness
 
-Claude Code — in any project: ask the agent to run `dsh_sessions` with `limit: 3`, then
-`dsh_send` targeting one of those sessions with the text `reply with the single word PONG`.
-Expect a tool result whose text is that session's answer.
-
-Antigravity — after restarting, in an Agent chat: run the same two calls. If the tools are absent,
-check the IDE's MCP log and confirm `~/.gemini/config/mcp_config.json` is the file it reads.
+In a Claude Code session, ask the agent to run `dsh_sessions` with `limit: 3`, then `dsh_send`
+targeting one of those sessions with `reply with the single word PONG`. Repeat in Antigravity once
+its config is in place. If the tools are absent, check that harness's MCP log and confirm the config
+file it actually reads.

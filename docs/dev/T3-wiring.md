@@ -62,11 +62,11 @@ anything; no partial state existed in the repo or in the harness configs).
 ### Installed
 
 - `npm link` → `dsh-bridge` and `dsh-bridge-mcp` both on PATH under
-  `~/.nvm/versions/node/v24.19.0/bin/`; both run from an unrelated cwd.
+  `/path/to/node/bin/`; both run from an unrelated cwd.
 - `scripts/verify.mjs` added; a passing run is pasted in `docs/install.md` §1 (live read-only
   round trip + staging send + detach + result).
 - Claude Code: registered at user scope, backups at `~/.claude.json.bak-dsh-bridge-*`:
-  `claude mcp add --scope user dsh-bridge -e PATH=/usr/bin:/bin:/usr/sbin:/sbin -e DSH_BRIDGE_FROM=claude-code -- /Users/zhouxuancheng/.nvm/versions/node/v24.19.0/bin/node /Users/zhouxuancheng/CodeBase/dsh-bridge/dist/mcp.js`
+  `claude mcp add --scope user dsh-bridge -e PATH=/usr/bin:/bin:/usr/sbin:/sbin -e DSH_BRIDGE_FROM=claude-code -- /path/to/node/bin/node /path/to/dsh-bridge-mcp/dist/mcp.js`
 - Antigravity: `~/.gemini/config/mcp_config.json` written (backup alongside), absolute node +
   absolute `dist/mcp.js`, `env = {PATH, DSH_BRIDGE_FROM=antigravity}`; validated with
   `python3 -m json.tool`.
@@ -75,12 +75,12 @@ anything; no partial state existed in the repo or in the harness configs).
 
 ```console
 $ which dsh-bridge dsh-bridge-mcp
-/Users/zhouxuancheng/.nvm/versions/node/v24.19.0/bin/dsh-bridge
-/Users/zhouxuancheng/.nvm/versions/node/v24.19.0/bin/dsh-bridge-mcp
+/path/to/node/bin/dsh-bridge
+/path/to/node/bin/dsh-bridge-mcp
 
 $ cd /tmp && dsh-bridge sessions --limit 2
-session-474d640c-0968-452a-9ee3-5bec233690fa	true	2026-11-23T10:02:52.263Z	跨 harness 向 DeepSeek 会话发消息	/Users/zhouxuancheng/Documents/Agent/deepseek-harness
-fe16bfce-65e4-4832-9eee-023953f6272e	false	2026-11-23T08:56:42.978Z	You are an independent code	/Users/zhouxuancheng/Documents/Agent/deepseek-harness
+session-474d640c-0968-452a-9ee3-5bec233690fa	true	2026-11-23T10:02:52.263Z	跨 harness 向 DeepSeek 会话发消息	/Users/<user>/Documents/Agent/deepseek-harness
+fe16bfce-65e4-4832-9eee-023953f6272e	false	2026-11-23T08:56:42.978Z	You are an independent code	/Users/<user>/Documents/Agent/deepseek-harness
 
 $ node scripts/verify.mjs
 ── live host: auth + discovery + session/list (read-only)
@@ -93,7 +93,7 @@ $ node scripts/verify.mjs
 verify: OK — live auth/list works (3053 sessions) and a staging send returned its own turn's answer.
 
 $ claude mcp list | grep dsh-bridge
-dsh-bridge: /Users/zhouxuancheng/.nvm/versions/node/v24.19.0/bin/node /Users/zhouxuancheng/CodeBase/dsh-bridge/dist/mcp.js - ✔ Connected
+dsh-bridge: /path/to/node/bin/node /path/to/dsh-bridge-mcp/dist/mcp.js - ✔ Connected
 
 $ dsh-bridge result --rpc-id deadbeef-0000-0000-0000-000000000000; echo exit=$?
 dsh-bridge: rpcId … is not in the send index (…) and no user/message carrying it appears in the tail

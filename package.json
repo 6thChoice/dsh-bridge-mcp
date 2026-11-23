@@ -8,7 +8,8 @@
     "dsh-bridge-mcp": "dist/mcp.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.map"
   ],
   "license": "MIT",
   "author": "6thChoice <6thChoice@users.noreply.github.com>",

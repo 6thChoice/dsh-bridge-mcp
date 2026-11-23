@@ -1,6 +1,6 @@
 # T1 — Core client + CLI (`sessions`, `send`, `result`)
 
-Implements §2–§9 of [`../spec.md`](../spec.md). This ticket is the whole kernel: auth, discovery,
+Implements §2–§9 of [`../spec.md`](../protocol.md). This ticket is the whole kernel: auth, discovery,
 resolution, prompt/await, result rendering, plus the staging harness that proves it.
 
 ## Deliverables
@@ -156,9 +156,9 @@ $ npm test
 
 ```console
 $ node dist/cli.js sessions --limit 3
-f192cdb2-f1a8-44c7-96f5-d4df24fb584b	true	2026-11-23T08:21:16.263Z	You are implementing ticket T1	/Users/zhouxuancheng/Documents/Agent/deepseek-harness
-f441b634-6e45-4b8a-8411-a0baa39853a1	false	2026-11-23T08:20:52.758Z	你在为私有仓 FundingRateArbC（git	/Users/zhouxuancheng/CodeBase/deepseek-harness/polymarket
-session-474d640c-0968-452a-9ee3-5bec233690fa	false	2026-11-23T08:20:05.930Z	跨 harness 向 DeepSeek 会话发消息	/Users/zhouxuancheng/Documents/Agent/deepseek-harness
+f192cdb2-f1a8-44c7-96f5-d4df24fb584b	true	2026-11-23T08:21:16.263Z	You are implementing ticket T1	/Users/<user>/Documents/Agent/deepseek-harness
+f441b634-6e45-4b8a-8411-a0baa39853a1	false	2026-11-23T08:20:52.758Z	你在为私有仓 FundingRateArbC（git	/Users/<user>/CodeBase/deepseek-harness/polymarket
+session-474d640c-0968-452a-9ee3-5bec233690fa	false	2026-11-23T08:20:05.930Z	跨 harness 向 DeepSeek 会话发消息	/Users/<user>/Documents/Agent/deepseek-harness
 $ echo $?
 0
 
@@ -172,7 +172,7 @@ Auto-discovery (no `--host`) resolved and confirmed the desktop host by itself:
 
 ```console
 $ node dist/cli.js sessions --limit 1
-f192cdb2-f1a8-44c7-96f5-d4df24fb584b	true	2026-11-23T08:21:16.263Z	You are implementing ticket T1	/Users/zhouxuancheng/Documents/Agent/deepseek-harness
+f192cdb2-f1a8-44c7-96f5-d4df24fb584b	true	2026-11-23T08:21:16.263Z	You are implementing ticket T1	/Users/<user>/Documents/Agent/deepseek-harness
 $ echo $?
 0
 ```
@@ -186,7 +186,7 @@ $ node dist/cli.js sessions --session 474d640c | cut -f1,4
 session-474d640c-0968-452a-9ee3-5bec233690fa	跨 harness 向 DeepSeek 会话发消息
 $ node dist/cli.js sessions --title 'ticket t1' | cut -f1,4
 f192cdb2-f1a8-44c7-96f5-d4df24fb584b	You are implementing ticket T1
-$ node dist/cli.js sessions --cwd /Users/zhouxuancheng/Documents/Agent/deepseek-harness --limit 2 | cut -f1,4
+$ node dist/cli.js sessions --cwd /Users/<user>/Documents/Agent/deepseek-harness --limit 2 | cut -f1,4
 f192cdb2-f1a8-44c7-96f5-d4df24fb584b	You are implementing ticket T1
 session-474d640c-0968-452a-9ee3-5bec233690fa	跨 harness 向 DeepSeek 会话发消息
 $ node dist/cli.js sessions --latest | cut -f1,4
@@ -199,8 +199,8 @@ these fail without touching the live session:
 ```console
 $ node dist/cli.js send probe --session f 2>&1 >/dev/null | head -3
 dsh-bridge: target --session f matches 193 sessions; narrow it:
-  f192cdb2-f1a8-44c7-96f5-d4df24fb584b	You are implementing ticket T1	/Users/zhouxuancheng/Documents/Agent/deepseek-harness	2026-11-23T08:21:16.263Z
-  f441b634-6e45-4b8a-8411-a0baa39853a1	你在为私有仓 FundingRateArbC（git	/Users/zhouxuancheng/CodeBase/deepseek-harness/polymarket	2026-11-23T08:20:52.758Z
+  f192cdb2-f1a8-44c7-96f5-d4df24fb584b	You are implementing ticket T1	/Users/<user>/Documents/Agent/deepseek-harness	2026-11-23T08:21:16.263Z
+  f441b634-6e45-4b8a-8411-a0baa39853a1	你在为私有仓 FundingRateArbC（git	/Users/<user>/CodeBase/deepseek-harness/polymarket	2026-11-23T08:20:52.758Z
 $ echo ${PIPESTATUS[0]}
 1
 $ node dist/cli.js send probe 2>&1 >/dev/null
@@ -233,7 +233,7 @@ staging host:
 
 ```console
 $ dsh-bridge sessions --limit 5
-session-588935a5-c94b-4276-9a30-fc6d5b6bc93c	false	2026-11-23T08:43:42.834Z		/Users/zhouxuancheng/CodeBase/dsh-bridge
+session-588935a5-c94b-4276-9a30-fc6d5b6bc93c	false	2026-11-23T08:43:42.834Z		/path/to/dsh-bridge-mcp
 $ SESSION=$(dsh-bridge sessions --latest | cut -f1); dsh-bridge send "What are you working on?" --session "$SESSION"
 SESSION=session-588935a5-c94b-4276-9a30-fc6d5b6bc93c
 QUICKSTART-OK
@@ -245,11 +245,11 @@ $ echo $?
 
 ```console
 $ which dsh-bridge
-/Users/zhouxuancheng/.nvm/versions/node/v24.19.0/bin/dsh-bridge
+/path/to/node/bin/dsh-bridge
 $ dsh-bridge --help | head -1
 dsh-bridge — send one message to an existing DeepSeek Harness session
 $ npm ls --omit=dev
-dsh-bridge@0.1.0 /Users/zhouxuancheng/CodeBase/dsh-bridge
+dsh-bridge@0.1.0 /path/to/dsh-bridge-mcp
 └── (empty)
 ```
 

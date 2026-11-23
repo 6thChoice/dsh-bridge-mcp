@@ -1,15 +1,16 @@
 # Usage
 
-Three commands. `send` is the kernel; `result` reads a send back; `sessions` finds targets.
+Five commands. `send` is the kernel; `result` reads a send back; `sessions` finds targets; `doctor`
+diagnoses; `setup` emits harness config.
 
-## Targeting
+## Resolving a target
 
 Exactly one family per `send`; families AND together, so `--cwd` + `--latest` is a good default.
 
 ```sh
-dsh-bridge sessions --limit 5                  # newest 5
-dsh-bridge sessions --cwd <path-to-project>    # everything for one working directory
-dsh-bridge sessions --title "因子失效" --json   # title search, machine-readable
+dsh-bridge sessions --limit 5                 # newest 5
+dsh-bridge sessions --cwd <path-to-project>   # everything for one working directory
+dsh-bridge sessions --title "ingest" --json   # title search, machine-readable
 ```
 
 | flag | meaning |
@@ -22,34 +23,46 @@ dsh-bridge sessions --title "因子失效" --json   # title search, machine-read
 No selector → error. More than one match → error listing up to 10 candidates; narrow it rather than
 letting the tool guess.
 
+## Host and authentication switches
+
+| flag | env | meaning |
+|---|---|---|
+| `--url <url>` | `DSH_BRIDGE_URL` | DSH launch URL **including** `?token=…`; exchanged for the browser cookie |
+| `--host <origin>` | `DSH_BRIDGE_HOST` | origin only; authenticates by minting the cookie from `$DSH_HOME` credentials |
+| `--dsh-home <dir>` | `DSH_HOME` | where credentials and the send index live (default `~/.dsh`) |
+
+Precedence: `--url` → `DSH_BRIDGE_URL` → `--host` → `DSH_BRIDGE_HOST` → config file → platform
+discovery. A url-token path always beats credential minting; if both are configured, `doctor` says
+so. An origin mismatch between `--url` and an explicit `--host` is an error rather than a guess.
+
 ## `send`
 
 ```sh
 dsh-bridge send "where did you get to on the polymarket ingest?" --title "polymarket" --latest
 ```
 
-Prints **only** the final assistant text of the turn that consumed this message, then exits.
-Nothing else goes to stdout, so it can be pasted into another agent's tool result verbatim.
+Prints **only** the final assistant text of the turn that consumed this message, then exits. Nothing
+else goes to stdout, so it can be pasted into another agent's tool result verbatim.
 
 | flag | default | meaning |
 |---|---|---|
 | `--from <name>` | `$DSH_BRIDGE_FROM` or `cli` | sender label put in the visible prefix `[via <name>] ` |
 | `--no-prefix` | off | send the raw text with no `[via …]` prefix |
-| `--steer` | off | `steer` instead of `queue` (inject into the running turn, not after it) |
+| `--steer` | off | `steer` instead of `queue` (join the running turn rather than following it) |
 | `--detach` | off | return the `rpcId` immediately instead of waiting |
 | `--timeout <seconds>` | `180` (or `$DSH_BRIDGE_TIMEOUT`) | how long to wait for the turn to end |
 | `--force` | off | allow a target whose `agentAvailable` is `false` |
 | `--json` | off | print the JSON verdict instead of plain text |
 
-Completion is decided by the session log, not by quiet polling: the bridge waits for the
-`user/message` carrying its own `requestId`, remembers the turn that message landed in, and waits
+Completion is decided by the session log, not by polling for quiet: the bridge waits for the
+`user/message` carrying its own `requestId`, remembers which turn that message landed in, and waits
 for that turn's `turn/end`. A message queued behind a running turn therefore returns **its own**
 turn's answer, never the previous one.
 
 ### Timeouts and long handoffs
 
 A blocking `send` is bounded by the *caller's* tool timeout as well as `--timeout` — Claude Code's
-Bash tool tops out at 10 minutes, for example. For anything longer, detach:
+Bash tool caps at 10 minutes, for example. For anything longer, detach:
 
 ```sh
 rpc=$(dsh-bridge send "run the full backtest and report IC" --cwd <path-to-project> --latest --detach)
@@ -68,8 +81,33 @@ dsh-bridge result --rpc-id <id> --wait     # block until the turn ends
 dsh-bridge result --rpc-id <id> --json     # same JSON contract as send --json
 ```
 
-Lookup uses the append-only index `~/.dsh/dsh-bridge/sends.jsonl`; if the id is not there (another
-machine, cleared home), it scans the 50 most recently updated sessions for the matching `rpcId`.
+Lookup uses the append-only index `$DSH_HOME/dsh-bridge/sends.jsonl`; if the id is not there
+(another machine, cleared home), it scans the 50 most recently updated sessions for the matching
+`rpcId`.
+
+## `doctor`
+
+```sh
+dsh-bridge doctor          # human-readable
+dsh-bridge doctor --json   # one stable object
+```
+
+Fields: `ok`, `host`, `hostSource`, `authPath`, `authSource`, `credentialsAvailable`,
+`reachability{ok,latencyMs,detail}`, `probe{endpoint,status,latencyMs,detail}`, `sessionCount`,
+`checks[]{name,ok,detail,nextStep}`. Exit `0` only when the probe was accepted and at least one
+session is visible. Read-only: it never sends a prompt.
+
+## `setup`
+
+```sh
+dsh-bridge setup <harness> [--write] [--from <name>]
+```
+
+Harnesses: `claude-code`, `antigravity`, `codex`, `cursor`, `cline`, `continue`, `zed`, `raw`.
+Prints a block generated on this machine (`npx -y dsh-bridge-mcp` for npm installs, absolute
+`node` + `dist/mcp.js` for checkouts). `--write` is accepted only for `claude-code` and
+`antigravity`; every other harness prints only. Details and per-harness files:
+[`install.md`](install.md) §4 and [`../examples/`](../examples/).
 
 ## JSON contract
 
@@ -96,11 +134,15 @@ machine, cleared home), it scans the 50 most recently updated sessions for the m
 `blocked`/`error`/unknown→`error`. `pending` only appears for `--detach` and for `result` on a turn
 that has not ended. While `pending`, `text` is empty — plain mode prints nothing and exits 0, and what
 settled so far is available only as `--json`'s optional `partialText`. A `timeout` does keep its
-settled `text`. `sessions --json` returns the raw `session/list` rows instead.
+settled `text`. `sessions --json` returns the raw filtered `session/list` rows instead.
 
 `pending` means "no verdict in the durable log yet"; it can also mean the prompt was dropped before
 admission or fell outside the read window, so treat it as *unknown*, not as proof the turn is alive
-(see `docs/backlog.md` P2-3).
+(see `backlog.md` P2-3).
+
+`toolCalls[].ok` is `false` when the matching `tool/result` carries an error or no result arrived
+before the turn ended. Both DSH message shapes (0.2.x top-level `toolCallId`, 0.1.x
+`source.callId`) are understood.
 
 ### Exit codes
 
@@ -114,7 +156,7 @@ admission or fell outside the read window, so treat it as *unknown*, not as proo
 On timeout, plain mode keeps stdout text-only and puts the `rpcId` plus the read-later hint on
 stderr, so a caller that only parses stdout can never mistake a partial turn for a finished one.
 
-## MCP tools (Claude Code, Antigravity)
+## MCP tools (Claude Code, Antigravity, Codex, Cursor, …)
 
 | tool | arguments |
 |---|---|
@@ -124,32 +166,31 @@ stderr, so a caller that only parses stdout can never mistake a partial turn for
 
 `structuredContent` carries the JSON object above; `content[0].text` carries the plain rendering
 (the assistant text, the `rpcId` while pending, otherwise the status line or timeout hint).
-`isError: true` mirrors CLI exit codes 2/3/1 — a tool client that reads only the text still cannot
-mistake a failed turn for a successful one. MCP defaults: `timeoutSeconds` 3600, `from` `mcp`.
+`isError: true` mirrors CLI exit codes 2/3/1 — a client that reads only the text still cannot mistake
+a failed turn for a successful one. MCP defaults: `timeoutSeconds` 3600, `from` `mcp`. Host and
+authentication come from `DSH_BRIDGE_URL` / `DSH_BRIDGE_HOST` / `DSH_HOME` and the config file; there
+is deliberately no per-call host argument.
 
 ## Worked examples
 
 **1. Hand a task to another session and take the answer back.**
 
 ```sh
-dsh-bridge send "你们 polymarket 那套数据管线现在还能跑吗？只回结论" \
-  --cwd <absolute-path-to-session-cwd> --latest
+dsh-bridge send "你们那条数据管线现在还能跑吗？只回结论" --cwd <path-to-that-project> --latest
 ```
 
-The other session runs its own turn with its own context and tools; the text comes back on stdout
-and can be pasted straight into the calling harness's tool result.
+The other session runs its own turn with its own context and tools; the text comes back on stdout and
+can be pasted straight into the calling harness's tool result.
 
 **2. Long handoff, then poll.**
 
 ```sh
-dsh-bridge send "把 seed44 的滚动挖掘重跑到收敛，结束后只回 IC 和淘汰率" \
-  --title "seed44" --latest --detach
-# 1730 秒后…
-dsh-bridge result --rpc-id 90eb72e9-0843-44eb-b07e-2323a5041ca4 --json
+rpc=$(dsh-bridge send "重跑到收敛，结束后只回 IC 和淘汰率" --title "seed44" --latest --detach)
+dsh-bridge result --rpc-id "$rpc" --json
 ```
 
 **3. Which session am I even talking to?**
 
 ```sh
-dsh-bridge sessions --cwd <absolute-path-to-session-cwd> --limit 10
+dsh-bridge sessions --cwd <path-to-project> --limit 10
 ```

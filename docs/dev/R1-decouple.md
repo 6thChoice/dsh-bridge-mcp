@@ -184,7 +184,7 @@ Proof over all tracked files except this evidence bucket and the deferred histor
 
 ```console
 $ git ls-files -z ':!:docs/dev/**' ':!:docs/tickets/**' ':!:docs/release.md' \
-  | xargs -0 grep -nH -e '/Users/' -e 'zhouxuancheng' -e '\.nvm' || echo 'NO MATCHES'
+  | xargs -0 grep -nH -e '/Users/' -e '6thChoice' -e '\.nvm' || echo 'NO MATCHES'
 NO MATCHES
 
 $ git ls-files -z ':!:docs/dev/**' ':!:docs/tickets/**' ':!:docs/release.md' \
