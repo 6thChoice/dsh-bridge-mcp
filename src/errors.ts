@@ -64,3 +64,6 @@ export class SessionCandidate {
 
 /** `result` could not find the rpcId locally or on the host. */
 export class ResultNotFoundError extends BridgeError {}
+
+/** `setup` cannot render or write a usable harness config. */
+export class SetupError extends BridgeError {}

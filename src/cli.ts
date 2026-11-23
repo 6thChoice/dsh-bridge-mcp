@@ -15,6 +15,16 @@ import { filterSessions, hasSelector, type Target } from './resolve.js';
 import { sendMessage } from './run.js';
 import { isNodeVersionSupported, nodeVersionMessage } from './runtime.js';
 import { SendIndex, resultMessage } from './result.js';
+import { renderDoctor, runDoctor } from './doctor.js';
+import {
+  HARNESSES,
+  isHarness,
+  planSetup,
+  renderSetup,
+  shellQuote,
+  writeAntigravity,
+  writeClaudeCode,
+} from './setup.js';
 import type { SessionRow } from './client.js';
 
 const DEFAULT_TIMEOUT_SECONDS = 180;
@@ -26,6 +36,8 @@ Usage:
   dsh-bridge send <text> (target flags) [--from <name>] [--no-prefix]
                          [--steer] [--detach] [--timeout <seconds>] [--force] [--json]
   dsh-bridge result --rpc-id <id> [--wait] [--timeout <seconds>] [--json]
+  dsh-bridge doctor [--json]
+  dsh-bridge setup <harness> [--write] [--from <name>] [--force]
 
 Target flags (exactly one family for send):
   --session <id|prefix>   exact session id or unique prefix (session- prefix ignored)
@@ -34,11 +46,17 @@ Target flags (exactly one family for send):
   --latest                newest updatedAt among the filtered rows
 
 Global:
+  --url <url>             the launch URL dsh web printed (…/?token=…); wins over credentials.
+                          Default: $DSH_BRIDGE_URL, then the config file's "url" when it has a token
   --host <url>            DSH Web origin (default: $DSH_BRIDGE_HOST, config file, then discovery)
   --dsh-home <dir>        DSH home for credentials + send index
                           (default: $DSH_HOME, config file dshHome, or ~/.dsh)
   --json                  print one JSON object instead of plain text
   -h, --help              this help
+
+setup harnesses: ${HARNESSES.join(', ')}.
+  --write is supported for claude-code (claude mcp add) and antigravity
+  (~/.gemini/config/mcp_config.json, timestamped backup, --force to replace).
 
 Config file (optional): \${XDG_CONFIG_HOME:-~/.config}/dsh-bridge/config.json
   keys: url, host, dshHome; unknown keys or bad JSON are errors.
@@ -50,6 +68,8 @@ class CliError extends Error {}
 
 interface CliOptions {
   host?: string;
+  /** `--url`: the launch URL with `?token=`, exchanged for the cookie. */
+  url?: string;
   /** Only set when `--dsh-home` was passed; resolution is config-aware. */
   dshHome?: string;
   json: boolean;
@@ -60,7 +80,10 @@ interface CliOptions {
   detach: boolean;
   steer: boolean;
   force: boolean;
+  write: boolean;
   wait: boolean;
+  /** `--from` exactly as passed; `setup` defaults to the harness name, not `cli`. */
+  fromFlag?: string;
   rpcId?: string;
   limit?: number;
   positionals: string[];
@@ -102,6 +125,7 @@ function parseCli(argv: string[]): CliOptions {
       strict: true,
       options: {
         host: { type: 'string' },
+        url: { type: 'string' },
         'dsh-home': { type: 'string' },
         session: { type: 'string' },
         title: { type: 'string' },
@@ -115,6 +139,7 @@ function parseCli(argv: string[]): CliOptions {
         from: { type: 'string' },
         'no-prefix': { type: 'boolean' },
         force: { type: 'boolean' },
+        write: { type: 'boolean' },
         'rpc-id': { type: 'string' },
         wait: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
@@ -145,10 +170,13 @@ function parseCli(argv: string[]): CliOptions {
     detach: values.detach === true,
     steer: values.steer === true,
     force: values.force === true,
+    write: values.write === true,
     wait: values.wait === true,
     positionals,
   };
   if (values.host !== undefined) options.host = values.host;
+  if (values.url !== undefined) options.url = values.url;
+  if (values.from !== undefined) options.fromFlag = values.from;
   if (values['dsh-home'] !== undefined) options.dshHome = values['dsh-home'];
   if (values.limit !== undefined) options.limit = parsePositiveInteger(values.limit, '--limit');
   if (values['rpc-id'] !== undefined) options.rpcId = values['rpc-id'];
@@ -177,6 +205,7 @@ function sortRows(rows: SessionRow[]): SessionRow[] {
 async function openClient(options: CliOptions): Promise<SessionClient> {
   return SessionClient.connect({
     ...(options.host === undefined ? {} : { host: options.host }),
+    ...(options.url === undefined ? {} : { url: options.url }),
     ...(options.dshHome === undefined ? {} : { dshHome: options.dshHome }),
     caller: 'cli',
   });
@@ -270,6 +299,80 @@ async function commandResult(options: CliOptions): Promise<number> {
   return outcome.exitCode;
 }
 
+async function commandDoctor(options: CliOptions): Promise<number> {
+  if (options.positionals.length > 1) {
+    throw new CliError(`doctor takes no arguments, got "${options.positionals.slice(1).join(' ')}"`);
+  }
+  const report = await runDoctor({
+    ...(options.host === undefined ? {} : { host: options.host }),
+    ...(options.url === undefined ? {} : { url: options.url }),
+    ...(options.dshHome === undefined ? {} : { dshHome: options.dshHome }),
+    caller: 'cli',
+  });
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+  } else {
+    process.stdout.write(renderDoctor(report));
+  }
+  return report.ok ? 0 : 1;
+}
+
+async function commandSetup(options: CliOptions): Promise<number> {
+  const harness = options.positionals[1];
+  if (options.positionals.length > 2) {
+    throw new CliError(
+      `setup takes one harness name, got "${options.positionals.slice(1).join(' ')}"`,
+    );
+  }
+  if (!isHarness(harness)) {
+    throw new CliError(
+      `setup needs a harness: ${HARNESSES.join(', ')}` +
+        (harness === undefined ? '' : ` (got "${harness}")`),
+    );
+  }
+  if (options.json) throw new CliError('setup prints text only; --json is not supported');
+
+  const plan = planSetup(harness, {
+    ...(options.fromFlag === undefined ? {} : { from: options.fromFlag }),
+  });
+
+  if (!options.write) {
+    process.stdout.write(renderSetup(plan));
+    return 0;
+  }
+
+  switch (harness) {
+    case 'claude-code': {
+      const argv = plan.claudeCommand;
+      if (argv === null) {
+        throw new CliError('setup claude-code has no command to run');
+      }
+      process.stdout.write(
+        `dsh-bridge: running: ${['claude', ...argv].map(shellQuote).join(' ')}\n`,
+      );
+      writeClaudeCode(plan);
+      process.stdout.write('dsh-bridge: registered with Claude Code (scope user).\n');
+      return 0;
+    }
+    case 'antigravity': {
+      const result = writeAntigravity(plan, { force: options.force });
+      process.stdout.write(`dsh-bridge: wrote ${result.path}\n`);
+      if (result.backup !== null) {
+        process.stdout.write(`dsh-bridge: backup ${result.backup}\n`);
+      }
+      if (result.replaced) {
+        process.stdout.write('dsh-bridge: replaced the existing dsh-bridge entry (--force).\n');
+      }
+      return 0;
+    }
+    default:
+      throw new CliError(
+        `${harness} is print-only: --write is supported for claude-code and antigravity only. ` +
+          'Re-run without --write and paste the block.',
+      );
+  }
+}
+
 /** Run the CLI and return its intended exit code; never calls process.exit. */
 export async function main(argv: string[]): Promise<number> {
   let options: CliOptions;
@@ -298,8 +401,14 @@ export async function main(argv: string[]): Promise<number> {
         return await commandSend(options);
       case 'result':
         return await commandResult(options);
+      case 'doctor':
+        return await commandDoctor(options);
+      case 'setup':
+        return await commandSetup(options);
       default:
-        throw new CliError(`unknown command "${command ?? ''}"; expected sessions, send, or result`);
+        throw new CliError(
+          `unknown command "${command ?? ''}"; expected sessions, send, result, doctor, or setup`,
+        );
     }
   } catch (error) {
     if (error instanceof BridgeError || error instanceof CliError) {
