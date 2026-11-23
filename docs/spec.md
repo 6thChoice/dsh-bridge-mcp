@@ -24,7 +24,11 @@ sending to subagent addresses, editing session state, publishing to npm.
   build so `npm link` produces working bins.
 - **Repo:** `~/CodeBase/dsh-bridge`, independent git repository. Not inside the DSH source tree.
 
-## 3. Wire facts (verified against a live host, 0.1.5-rc.2 desktop, port 49904)
+## 3. Wire facts (verified against a live host, 0.2.1-rc.2 desktop, port 49904)
+
+Version note: the **running** desktop app is `0.2.1-rc.2`. The DSH source checkout on this machine
+is `0.1.5-rc.2`, which is *not* the serving build — do not take code there as what the host does.
+Where the two differ in a way that matters for this tool, §3.5 says so.
 
 These are the ground truth the client is built on. Re-verify with `ping`/`sessions` if a DSH
 upgrade breaks the client.
@@ -99,8 +103,15 @@ Treat every field as optional except `sessionId`.
 | `user/message` | `data.source = {kind:"user", rpcId, clientTimeZone}`, `data.content[]` |
 | `assistant/message` | `data.turn`, `data.message.content[{type:"reasoning"\|"text"\|"tool-call"}]`, `data.usage` |
 | `tool/call` | `data.{turn, step, callId, name, arguments}` |
-| `tool/result` | `data.{turn, step, message:{toolCallId, content[]}, error?}` |
+| `tool/result` | `data.{turn, step, message, error?}` — the call id appears in **two shapes**, see below |
 | `turn/end` | `data.{turn, reason:{kind}}` |
+
+`tool/result` message shapes (both are real; the client must accept both):
+0.2.x carries `data.message.toolCallId` at the top level, plus
+`data.message.content[0] = {type:"tool-result", toolCallId, …}`. 0.1.x carries **no** top-level id —
+the call id lives in `data.message.source.callId` (`{kind:"tool"}`) and in
+`data.message.content[0].toolCallId`. Linking a call to its result must therefore try all four
+fields; missing this makes every `toolCalls[].ok` read `false` on 0.1.x logs (review finding P1-3).
 
 `turn/end` reason kinds seen in the source: `completed`, `aborted` (+ reason), `blocked`,
 `error` (+ structured error), `max-tokens`, and plugin-extensible variants.
