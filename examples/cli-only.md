@@ -42,7 +42,7 @@ The URL token wins over the credentials file when both are available.
 ## Install
 
 ```sh
-npm i -g dsh-bridge-mcp     # then `dsh-bridge …` and `dsh-bridge-mcp` are on PATH
+npm install && npm link     # in the checkout; then `dsh-bridge …` is on PATH
 ```
 
 From a checkout, `npm install && npm run build`, then `node <absolute-path-to-dist>/cli.js …` or put

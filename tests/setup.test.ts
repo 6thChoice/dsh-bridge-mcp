@@ -30,6 +30,7 @@ import {
   planSetup,
   renderSetup,
   resolveLaunchCommand,
+  runningFromNpxCache,
   shellQuote,
   writeAntigravity,
   writeClaudeCode,
@@ -171,13 +172,35 @@ test('installedFromNpm detects a node_modules entry path on every separator', ()
   assert.equal(installedFromNpm(''), false);
 });
 
-test('resolveLaunchCommand prefers npx for npm installs and node+dist/mcp.js otherwise', () => {
-  const npm = resolveLaunchCommand({
+test('resolveLaunchCommand uses the git npx form only for npx cache runs', () => {
+  // Run straight from GitHub: npx fetched us into its cache, so there is no stable
+  // install path to point a harness at. Bare `npx <spec>` is wrong here — with two bins
+  // the package ships, npx picks none and silently does nothing — hence --package.
+  const cached = resolveLaunchCommand({
+    argv1: '/Users/x/.npm/_npx/1a2b/node_modules/dsh-bridge-mcp/dist/cli.js',
+    execPath: '/usr/local/bin/node',
+    mcpEntry: '/Users/x/.npm/_npx/1a2b/node_modules/dsh-bridge-mcp/dist/mcp.js',
+  });
+  assert.deepEqual(cached, {
+    command: 'npx',
+    args: ['-y', '--package', 'github:6thChoice/dsh-bridge-mcp', 'dsh-bridge-mcp'],
+    mode: 'npx-git',
+  });
+});
+
+test('resolveLaunchCommand uses absolute node + dist/mcp.js for checkouts and installs', () => {
+  // A global install is still a real path on this machine, and npm publishing has not
+  // happened, so `npx -y dsh-bridge-mcp` would resolve to nothing: always use the path.
+  const installed = resolveLaunchCommand({
     argv1: '/usr/local/lib/node_modules/dsh-bridge-mcp/dist/cli.js',
     execPath: '/usr/local/bin/node',
     mcpEntry: '/usr/local/lib/node_modules/dsh-bridge-mcp/dist/mcp.js',
   });
-  assert.deepEqual(npm, { command: 'npx', args: ['-y', 'dsh-bridge-mcp'], mode: 'npx' });
+  assert.deepEqual(installed, {
+    command: '/usr/local/bin/node',
+    args: ['/usr/local/lib/node_modules/dsh-bridge-mcp/dist/mcp.js'],
+    mode: 'node',
+  });
 
   const local = resolveLaunchCommand({
     argv1: '/repo/dist/cli.js',
@@ -189,6 +212,14 @@ test('resolveLaunchCommand prefers npx for npm installs and node+dist/mcp.js oth
     args: ['/repo/dist/mcp.js'],
     mode: 'node',
   });
+});
+
+test('runningFromNpxCache recognises only npx cache paths', () => {
+  assert.equal(runningFromNpxCache('/home/u/.npm/_npx/abc/node_modules/x/dist/cli.js'), true);
+  assert.equal(runningFromNpxCache('/usr/lib/node_modules/dsh-bridge-mcp/dist/cli.js'), false);
+  assert.equal(runningFromNpxCache('/repo/dist/cli.js'), false);
+  assert.equal(runningFromNpxCache(undefined), false);
+  assert.equal(runningFromNpxCache(''), false);
 });
 
 test('defaultMcpEntry resolves the dist/mcp.js of this package', () => {

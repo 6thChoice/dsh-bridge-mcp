@@ -6,21 +6,22 @@ using a browser-equivalent session.
 
 ## 1. Install
 
-```sh
-npm i -g dsh-bridge-mcp     # gives you dsh-bridge (CLI) and dsh-bridge-mcp (MCP server)
-```
-
-or run it without installing:
-
-```sh
-npx -y dsh-bridge-mcp
-```
-
-From source:
+Not published to npm yet, so install from source:
 
 ```sh
 git clone https://github.com/6thChoice/dsh-bridge-mcp
-cd dsh-bridge-mcp && npm install && npm run build && npm link
+cd dsh-bridge-mcp && npm install && npm link
+```
+
+`npm install` alone is enough: the package's `prepare` script builds `dist/`. `npm link` only adds the
+`dsh-bridge` and `dsh-bridge-mcp` commands to your `PATH`; every command also works as
+`node dist/cli.js …` from inside the checkout, and `setup` emits absolute paths either way.
+
+Without a clone, `npx` can run the repository copy — `--package` is required because the package
+ships two binaries and a bare `npx <spec>` picks neither:
+
+```sh
+npx -y --package github:6thChoice/dsh-bridge-mcp dsh-bridge doctor
 ```
 
 Node **>= 22.19**. Automatic host discovery uses `lsof` (macOS), `ss`/`lsof` (Linux) or
@@ -74,9 +75,10 @@ ignored, so a typo cannot silently change behaviour.
 
 ## 4. Wire it into a harness
 
-`setup` prints a configuration block generated from **the machine running it** — it uses the absolute
-`node` binary and the installed `dist/mcp.js` when running from a checkout, or `npx -y dsh-bridge-mcp`
-when running from an npm install:
+`setup` prints a configuration block generated from **the machine running it**: the absolute `node`
+binary plus the resolved `dist/mcp.js`, so it works today without a published package. (Only when you
+ran the tool through `npx` — no stable install path exists — does it emit the
+`npx -y --package github:6thChoice/dsh-bridge-mcp` form instead.)
 
 ```sh
 dsh-bridge setup claude-code      # print only

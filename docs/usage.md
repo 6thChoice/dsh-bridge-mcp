@@ -104,8 +104,8 @@ dsh-bridge setup <harness> [--write] [--from <name>]
 ```
 
 Harnesses: `claude-code`, `antigravity`, `codex`, `cursor`, `cline`, `continue`, `zed`, `raw`.
-Prints a block generated on this machine (`npx -y dsh-bridge-mcp` for npm installs, absolute
-`node` + `dist/mcp.js` for checkouts). `--write` is accepted only for `claude-code` and
+Prints a block generated on this machine — absolute `node` + `dist/mcp.js` for a clone or install, or
+the `npx -y --package github:6thChoice/dsh-bridge-mcp` form when it was itself run through `npx`. `--write` is accepted only for `claude-code` and
 `antigravity`; every other harness prints only. Details and per-harness files:
 [`install.md`](install.md) §4 and [`../examples/`](../examples/).
 

@@ -16,6 +16,11 @@ In transcripts below, machine paths are shortened to `<repo>`, `<node>`, `<tmp>`
 value to `<token>`. Nothing else was edited. Tokens and cookies are never printed anywhere — that is
 enforced by tests, not by editing these transcripts.
 
+> **Distribution note (added later):** the `npx -y dsh-bridge-mcp` launch form recorded in
+> this evidence predates the source-only distribution decision. `src/setup.ts` now emits the
+> absolute `node` + `dist/mcp.js` pair, or `npx -y --package github:6thChoice/dsh-bridge-mcp` when
+> it was itself run through npx. The rest of the evidence stands.
+
 ## 1. Precedence — as implemented
 
 `resolveHost` (`src/host.ts`) now resolves auth and host together:

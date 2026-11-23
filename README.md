@@ -2,9 +2,11 @@
 
 [中文](README.zh.md) · English
 
-[![npm](https://img.shields.io/npm/v/dsh-bridge-mcp?style=flat-square)](https://www.npmjs.com/package/dsh-bridge-mcp)
 [![ci](https://github.com/6thChoice/dsh-bridge-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/6thChoice/dsh-bridge-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-374151.svg)](LICENSE)
+
+> **Pre-release.** Distributed from this repository only — there is no npm package yet. Install with
+> the four commands below; nothing else is required.
 
 **Hand one task to an existing DeepSeek Harness session from Claude Code, Antigravity, Codex, or any
 other agent — and get that session's answer back.**
@@ -42,28 +44,35 @@ session messaging to the host's own agents). Both are reasonable; they sit in di
 Pick the plugin if you want DSH agents messaging each other inside one host. Pick this if the caller
 lives outside DSH, or if the host is on another machine.
 
-## Install
+## Install (source only, for now)
 
-Nothing to install (recommended for MCP):
-
-```sh
-npx -y dsh-bridge-mcp
-```
-
-Globally, which gives you both commands — `dsh-bridge` (CLI) and `dsh-bridge-mcp` (MCP server):
-
-```sh
-npm i -g dsh-bridge-mcp
-```
-
-From source:
+Not on npm yet. Use it straight from this repository — Node ≥ 22.19 and no other prerequisites.
 
 ```sh
 git clone https://github.com/6thChoice/dsh-bridge-mcp
-cd dsh-bridge-mcp && npm install && npm run build && npm link
+cd dsh-bridge-mcp
+npm install     # builds dist/ through the package's prepare script
+npm link        # optional: puts dsh-bridge and dsh-bridge-mcp on PATH
 ```
 
+Running `npm link` is optional: every command below also works as
+`node dist/cli.js …` from inside the checkout, and `setup` emits an absolute path either way, so
+nothing depends on a global install.
+
+No clone at all — `npx` can run it from GitHub (note `--package`: the package ships two binaries, and
+a bare `npx <spec>` would pick neither):
+
+```sh
+npx -y --package github:6thChoice/dsh-bridge-mcp dsh-bridge doctor
+```
+
+The first `npx` run fetches and builds the package into npx's cache (a slow first start), so for a
+harness you use every day prefer the clone above. When a published release lands, `npx -y
+dsh-bridge-mcp` will replace that form.
+
 ## 60 seconds
+
+From inside the checkout (if you skipped `npm link`, prefix each with `node dist/cli.js`):
 
 ```sh
 dsh-bridge doctor            # host, auth path, reachability, and the fix for anything failing
@@ -71,7 +80,8 @@ dsh-bridge sessions --limit 5
 dsh-bridge send "reply with the single word PONG" --cwd ~/code/my-project --latest
 ```
 
-Wire it into a harness — `setup` prints a block generated from *your* machine:
+Wire it into a harness — `setup` prints a block generated from *your* machine (absolute `node` and
+the checkout's `dist/mcp.js`, so it works without a publish):
 
 ```sh
 dsh-bridge setup claude-code           # or antigravity, codex, cursor, cline, continue, zed, raw

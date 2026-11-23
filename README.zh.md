@@ -2,9 +2,10 @@
 
 简体中文 · [English](README.md)
 
-[![npm](https://img.shields.io/npm/v/dsh-bridge-mcp?style=flat-square)](https://www.npmjs.com/package/dsh-bridge-mcp)
 [![ci](https://github.com/6thChoice/dsh-bridge-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/6thChoice/dsh-bridge-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-374151.svg)](LICENSE)
+
+> **预发布版。** 只从本仓库分发——npm 上还没有包。按下面四条命令安装，不需要其他东西。
 
 **从 Claude Code、Antigravity、Codex 或任何其他 agent，把一件事交给一个**已有的** DeepSeek Harness
 会话去做，并拿回那个会话的回答。**
@@ -38,28 +39,33 @@ dsh-bridge send "ingest 那块你做到哪了？只说结论" --title "polymarke
 
 想在单个宿主内让 DSH 的 agent 互相发消息，选插件；调用方在 DSH 之外、或主机在另一台机器上，选这个。
 
-## 安装
+## 安装（目前只从源码）
 
-零安装（推荐给 MCP 用）：
-
-```sh
-npx -y dsh-bridge-mcp
-```
-
-全局安装，会同时得到两个命令——`dsh-bridge`（CLI）与 `dsh-bridge-mcp`（MCP server）：
-
-```sh
-npm i -g dsh-bridge-mcp
-```
-
-从源码：
+还没发布到 npm。直接从本仓库用即可——只需要 Node ≥ 22.19，别的都不用装。
 
 ```sh
 git clone https://github.com/6thChoice/dsh-bridge-mcp
-cd dsh-bridge-mcp && npm install && npm run build && npm link
+cd dsh-bridge-mcp
+npm install     # 通过 prepare 脚本自动构建 dist/
+npm link        # 可选：把 dsh-bridge 与 dsh-bridge-mcp 放进 PATH
 ```
 
+`npm link` 是可选的：所有命令在仓库目录里用 `node dist/cli.js …` 都能跑，而且 `setup` 输出的也是
+绝对路径，不依赖全局安装。
+
+完全不想 clone 也行——`npx` 可以直接从 GitHub 跑（注意必须带 `--package`：本包包内有两个可执行文件，
+裸写 `npx <spec>` 会一个都不选、静默退出）：
+
+```sh
+npx -y --package github:6thChoice/dsh-bridge-mcp dsh-bridge doctor
+```
+
+首次 `npx` 会把它抓进 npx 缓存并构建（第一次启动较慢），所以天天用的 harness 建议还是 clone 上面那条。
+等正式发版后，这里会换成 `npx -y dsh-bridge-mcp`。
+
 ## 60 秒上手
+
+在仓库目录里执行（没做 `npm link` 的话，每条前面加 `node dist/cli.js`）：
 
 ```sh
 dsh-bridge doctor            # 主机、认证路径、连通性，以及每一项失败该怎么修
@@ -67,7 +73,8 @@ dsh-bridge sessions --limit 5
 dsh-bridge send "只回一个词：PONG" --cwd ~/code/my-project --latest
 ```
 
-接进某个 harness —— `setup` 会用**你这台机器**的真实路径生成配置块：
+接进某个 harness —— `setup` 会用**你这台机器**的真实路径生成配置块（绝对 node + 仓库里的 `dist/mcp.js`，
+所以在没发布 npm 的情况下也能直接用）：
 
 ```sh
 dsh-bridge setup claude-code           # 或 antigravity、codex、cursor、cline、continue、zed、raw

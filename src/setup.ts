@@ -157,8 +157,12 @@ const HARNESS_INFO: Record<Harness, HarnessInfo> = {
 export interface LaunchCommand {
   command: string;
   args: string[];
-  /** `npx` when the package was installed from npm, else the running node binary. */
-  mode: 'npx' | 'node';
+  /**
+   * `npx-git` when this copy was fetched by `npx` into its cache (the package is
+   * not published to npm yet, so the git specifier is the only valid npx form),
+   * else `node` with this machine's absolute binary and `dist/mcp.js`.
+   */
+  mode: 'npx-git' | 'node';
 }
 
 export interface LaunchCommandOptions {
@@ -176,6 +180,19 @@ export function installedFromNpm(argv1: string | undefined): boolean {
   return argv1.split(/[\\/]+/).includes('node_modules');
 }
 
+/**
+ * True when the executing script lives in npx's own cache (`_npx`), i.e. the
+ * user ran us straight from GitHub and has no stable install path to point a
+ * harness at.
+ */
+export function runningFromNpxCache(argv1: string | undefined): boolean {
+  if (argv1 === undefined || argv1 === '') return false;
+  return argv1.split(/[\\/]+/).includes('_npx');
+}
+
+/** Git specifier used for runs straight from GitHub (the package is unpublished). */
+export const GITHUB_PACKAGE_SPEC = 'github:6thChoice/dsh-bridge-mcp';
+
 /** Absolute path of `dist/mcp.js` for this checkout/install. */
 export function defaultMcpEntry(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -189,15 +206,22 @@ export function defaultMcpEntry(): string {
 }
 
 /**
- * Generate the launch command from the running machine. npm installs prefer
- * `npx -y dsh-bridge-mcp` (the `-y` suppresses npx's interactive install
- * prompt, which a GUI harness cannot answer); source checkouts use the absolute
- * node + `dist/mcp.js` pair.
+ * Generate the launch command from the running machine.
+ *
+ * The package is distributed from GitHub source only (no npm publish yet), so
+ * there are two honest forms: a run fetched into npx's cache gets the verified
+ * `npx -y --package github:<repo> <bin>` form (a bare `npx <spec>` picks no bin
+ * when a package ships two), and every other run — checkout, `npm link`, global
+ * install — gets this machine's absolute node binary plus `dist/mcp.js`.
  */
 export function resolveLaunchCommand(options: LaunchCommandOptions = {}): LaunchCommand {
   const argv1 = options.argv1 ?? process.argv[1];
-  if (installedFromNpm(argv1)) {
-    return { command: 'npx', args: ['-y', 'dsh-bridge-mcp'], mode: 'npx' };
+  if (runningFromNpxCache(argv1)) {
+    return {
+      command: 'npx',
+      args: ['-y', '--package', GITHUB_PACKAGE_SPEC, 'dsh-bridge-mcp'],
+      mode: 'npx-git',
+    };
   }
   return {
     command: options.execPath ?? process.execPath,
@@ -389,9 +413,9 @@ export function renderSetup(plan: SetupPlan): string {
   lines.push(`sender       ${plan.from}  (DSH_BRIDGE_FROM)`);
   lines.push(
     `launch       ${
-      plan.mode === 'npx'
-        ? 'npx -y dsh-bridge-mcp (package installed from npm)'
-        : 'this node binary + the absolute dist/mcp.js path (source checkout)'
+      plan.mode === 'npx-git'
+        ? 'npx -y --package github:6thChoice/dsh-bridge-mcp dsh-bridge-mcp (run from GitHub)'
+        : 'this node binary + the absolute dist/mcp.js path (checkout or install)'
     }`,
   );
   lines.push('', plan.block, '');
