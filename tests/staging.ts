@@ -383,6 +383,8 @@ export class StubProvider {
 
 export interface Staging {
   url: string;
+  /** The `dsh web: http://127.0.0.1:<port>/?token=…` launch URL, token included. */
+  launchUrl: string;
   home: string;
   sessionId: string;
   client: SessionClient;
@@ -500,7 +502,7 @@ export async function startStaging(): Promise<Staging> {
     rmSync(home, { recursive: true, force: true });
   };
 
-  return { url: origin, home, sessionId, client, stub, createSession, stop };
+  return { url: origin, launchUrl, home, sessionId, client, stub, createSession, stop };
 }
 
 async function stopChild(child: ChildProcess): Promise<void> {

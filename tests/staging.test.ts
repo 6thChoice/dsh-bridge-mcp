@@ -4,7 +4,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { asRecord, sessionCursor } from '../src/client.js';
@@ -329,4 +329,67 @@ test('plain result on a running turn prints nothing; --json still reports pendin
   assert.equal(pending.status, 'pending');
   assert.equal(pending.text, '');
   assert.equal(pending.partialText, 'PARTIAL-TEXT');
+});
+
+/* ------------------------------------------------- URL-token authentication */
+
+function tokenOf(url: string): string {
+  return new URL(url).searchParams.get('token') ?? '';
+}
+
+test('URL token alone authenticates a send, with DSH_HOME at a non-existent dir', { skip: stagingSkip, timeout: 60_000 }, async () => {
+  staging.stub.setHandler((): StubResponse => ({ text: 'URL-TOKEN-PONG' }));
+  const sessionId = await staging.createSession();
+  const missingHome = join(staging.home, 'no-such-dsh-home');
+  const token = tokenOf(staging.launchUrl);
+  assert.ok(token.length > 0, 'the staging launch URL must carry a token');
+
+  const run = await runCli(
+    [
+      'send',
+      'url-token-marker',
+      '--url',
+      staging.launchUrl,
+      '--session',
+      sessionId,
+      '--timeout',
+      '20',
+      '--json',
+    ],
+    { home: missingHome },
+  );
+  assert.equal(run.code, 0, run.stderr);
+  const result = json(run);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.text, 'URL-TOKEN-PONG');
+  assert.equal(result.host, staging.url);
+  assert.equal(typeof result.rpcId, 'string');
+  // The credential path cannot have been used, and the token never leaks.
+  assert.equal(existsSync(join(missingHome, '.credentials.yaml')), false);
+  assert.ok(!run.stdout.includes(token), 'the token must not appear in stdout');
+  assert.ok(!run.stderr.includes(token), 'the token must not appear in stderr');
+});
+
+test('doctor reports the url-token path and a live session/list on staging', { skip: stagingSkip, timeout: 60_000 }, async () => {
+  const missingHome = join(staging.home, 'doctor-no-such-home');
+  const token = tokenOf(staging.launchUrl);
+
+  const asJson = await runCli(['doctor', '--url', staging.launchUrl, '--json'], { home: missingHome });
+  assert.equal(asJson.code, 0, asJson.stderr);
+  const report = json(asJson);
+  assert.equal(report.ok, true);
+  assert.equal(report.host, staging.url);
+  assert.equal(report.authPath, 'url-token');
+  assert.equal(report.authSource, 'flag');
+  assert.equal((report.probe as Record<string, unknown>).status, 'accepted');
+  assert.ok(Number(report.sessionCount) >= 1);
+  assert.equal(existsSync(join(missingHome, '.credentials.yaml')), false);
+  assert.ok(!asJson.stdout.includes(token), 'the token must not appear in --json output');
+  assert.ok(!asJson.stderr.includes(token), 'the token must not appear on stderr');
+
+  const asText = await runCli(['doctor', '--url', staging.launchUrl], { home: missingHome });
+  assert.equal(asText.code, 0, asText.stderr);
+  assert.match(asText.stdout, /url-token/);
+  assert.match(asText.stdout, /ok — the bridge can send/);
+  assert.ok(!asText.stdout.includes(token));
 });
